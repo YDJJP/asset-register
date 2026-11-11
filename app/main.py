@@ -14,6 +14,13 @@ from app.routers import auth_router, user_router, asset_router
 async def lifespan(app: FastAPI):
     # Startup: initialize database tables
     init_db()
+    # Pre-warm OCR engine to avoid cold-start overhead and verify runtime libraries
+    try:
+        from app.recognizer import get_ocr_engine
+        engine = get_ocr_engine()
+        print(f"[Startup] OCR Engine initialized successfully: {bool(engine)}")
+    except Exception as e:
+        print(f"[Startup] OCR Engine init warning: {e}")
     yield
     # Shutdown
 
