@@ -58,6 +58,13 @@
                     <span class="hidden md:inline">扫码寻物</span>
                 </button>
 
+                <!-- Translation Rules Button -->
+                <button @click="showTranslationsModal = true" title="设备命名翻译规则 (AI 自学习)"
+                        class="p-2 sm:px-3 sm:py-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg flex items-center space-x-1.5 transition text-sm">
+                    <i data-lucide="languages" class="w-4 h-4 text-indigo-600"></i>
+                    <span class="hidden md:inline">翻译规则</span>
+                </button>
+
                 <!-- Export CSV Button -->
                 <button @click="exportCsv" title="导出全部数据为 CSV"
                         class="p-2 sm:px-3 sm:py-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg flex items-center space-x-1.5 transition text-sm">
@@ -285,6 +292,14 @@
                         <option value="报废">报废 (Scrapped)</option>
                     </select>
 
+                    <!-- Hierarchy Filter (Parent/Child) -->
+                    <select v-model="selectedHierarchy" @change="loadAssets(1)"
+                            class="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-700 outline-none">
+                        <option value="all">全部层级</option>
+                        <option value="root">仅主设备 (顶级)</option>
+                        <option value="children">仅子设备 (部件)</option>
+                    </select>
+
                     <button @click="loadAssets(1)" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition shrink-0">
                         筛选
                     </button>
@@ -303,6 +318,17 @@
                         <span class="hidden sm:inline">列表视图</span>
                     </button>
                 </div>
+            </div>
+
+            <!-- Active Parent Filter Notification Tag -->
+            <div v-if="selectedParentFilter" class="flex items-center justify-between text-xs bg-indigo-50 border border-indigo-200 text-indigo-800 px-3.5 py-2 rounded-xl">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="git-fork" class="w-4 h-4 text-indigo-600 rotate-180"></i>
+                    <span>当前仅显示主设备 <b class="font-mono">{{ selectedParentFilter }}</b> 关联的子部件</span>
+                </div>
+                <button @click="filterByParent('')" class="text-indigo-600 hover:text-indigo-900 font-semibold underline text-xs">
+                    清除并显示全部
+                </button>
             </div>
 
             <!-- Loading Spinner -->
@@ -361,12 +387,29 @@
 
                     <!-- Card Body -->
                     <div class="p-4 flex-1 flex flex-col">
-                        <!-- Asset ID & Tag -->
-                        <div class="flex items-center justify-between mb-1.5">
+                        <!-- Asset ID & Hierarchy Badges -->
+                        <div class="flex flex-wrap items-center justify-between gap-1 mb-1.5">
                             <span class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
                                 {{ item.id }}
                             </span>
-                            <span class="text-[11px] text-slate-400">
+
+                            <!-- Parent badge if this is a child -->
+                            <span v-if="item.parent_id" @click.stop="openDetail(item.parent_id)"
+                                  class="text-[10px] font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded flex items-center space-x-0.5 border border-indigo-200/50 cursor-pointer"
+                                  :title="'所属主设备: ' + (item.parent_name || item.parent_id)">
+                                <i data-lucide="git-fork" class="w-2.5 h-2.5 rotate-180"></i>
+                                <span class="max-w-[70px] truncate">{{ item.parent_name || item.parent_id }}</span>
+                            </span>
+
+                            <!-- Children count badge if this has child equipment -->
+                            <button v-else-if="item.children_count > 0" @click.stop="filterByParent(item.id)"
+                                    class="text-[10px] font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 px-1.5 py-0.5 rounded flex items-center space-x-1 border border-slate-200"
+                                    :title="'含 ' + item.children_count + ' 个子部件，点击查看'">
+                                <i data-lucide="layers" class="w-2.5 h-2.5 text-indigo-600"></i>
+                                <span>{{ item.children_count }}子部件</span>
+                            </button>
+
+                            <span v-else class="text-[11px] text-slate-400">
                                 {{ item.created_at ? item.created_at.slice(0, 10) : '' }}
                             </span>
                         </div>
@@ -435,8 +478,16 @@
                                         <i v-else data-lucide="image" class="w-5 h-5 text-slate-300"></i>
                                     </div>
                                 </td>
-                                <td class="px-4 py-2.5 font-mono text-xs font-bold text-indigo-600">
-                                    {{ item.id }}
+                                <td class="px-4 py-2.5">
+                                    <div class="font-mono text-xs font-bold text-indigo-600">{{ item.id }}</div>
+                                    <div v-if="item.parent_id" class="text-[10px] text-indigo-700 flex items-center space-x-0.5 mt-0.5">
+                                        <i data-lucide="git-fork" class="w-2.5 h-2.5 rotate-180"></i>
+                                        <span>隶属: {{ item.parent_name || item.parent_id }}</span>
+                                    </div>
+                                    <div v-else-if="item.children_count > 0" class="text-[10px] text-slate-500 flex items-center space-x-0.5 mt-0.5">
+                                        <i data-lucide="layers" class="w-2.5 h-2.5 text-indigo-500"></i>
+                                        <span>含 {{ item.children_count }} 个子部件</span>
+                                    </div>
                                 </td>
                                 <td class="px-4 py-2.5 font-medium text-slate-900 max-w-[200px] truncate">
                                     {{ item.name }}
@@ -520,7 +571,7 @@
                     </div>
                     
                     <div class="flex space-x-2">
-                        <input v-model="assetForm.id" :disabled="isEditing" type="text" placeholder="例如 PU.023 / AST-001 / 条形码"
+                        <input v-model="assetForm.id" @input="handleIdChange" :disabled="isEditing" type="text" placeholder="例如 CPR001 / PU.023 / LBL02"
                                class="flex-1 px-3.5 py-2 rounded-lg border border-slate-300 font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none disabled:bg-slate-100">
                         <button v-if="!isEditing && pendingImages.length > 0" @click="triggerManualRecognize()" :disabled="isRecognizingId" type="button"
                                 class="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-medium rounded-lg transition shrink-0 flex items-center space-x-1 border border-indigo-200/60">
@@ -577,6 +628,26 @@
                             {{ cand }}
                         </button>
                     </div>
+                </div>
+
+                <!-- Parent Asset Selector (Hierarchy) -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                            所属主设备 / 父级设备 (可选)
+                        </label>
+                        <span v-if="assetForm.parent_id" class="text-[11px] text-indigo-600 font-medium flex items-center space-x-1">
+                            <i data-lucide="git-fork" class="w-3 h-3 rotate-180"></i>
+                            <span>已关联父级设备</span>
+                        </span>
+                    </div>
+                    <select v-model="assetForm.parent_id"
+                            class="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white text-slate-700">
+                        <option value="">-- 无 (独立顶级主设备) --</option>
+                        <option v-for="p in parentOptions" :key="p.id" :value="p.id">
+                            {{ p.id }} - {{ p.name }} ({{ p.location }})
+                        </option>
+                    </select>
                 </div>
 
                 <!-- Location with Quick Pick Chips -->
@@ -807,6 +878,30 @@
                     </div>
                 </div>
 
+                <!-- Parent Device Link Card -->
+                <div v-if="activeAsset.parent" class="p-3.5 bg-indigo-50/80 border border-indigo-200/80 rounded-xl flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                            <i data-lucide="layers" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                            <div class="text-[11px] text-indigo-700 font-semibold uppercase flex items-center space-x-1">
+                                <i data-lucide="git-fork" class="w-3 h-3 rotate-180"></i>
+                                <span>所属上级主设备</span>
+                            </div>
+                            <div class="text-sm font-bold text-slate-900 font-mono">
+                                {{ activeAsset.parent.id }} <span class="font-sans font-medium text-slate-700">- {{ activeAsset.parent.name }}</span>
+                            </div>
+                            <div class="text-xs text-slate-500">{{ activeAsset.parent.location }}</div>
+                        </div>
+                    </div>
+                    <button @click="openDetail(activeAsset.parent.id)"
+                            class="px-3 py-1.5 bg-white hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-lg shadow-sm border border-indigo-200 transition flex items-center space-x-1 shrink-0">
+                        <span>查看主设备</span>
+                        <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+
                 <!-- Asset Attributes Grid -->
                 <div class="bg-slate-50/70 border border-slate-200/80 rounded-xl p-4.5 space-y-3">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -850,6 +945,56 @@
                     <div v-if="activeAsset.description" class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
                         <div class="text-xs text-slate-400 font-medium mb-1">规格型号 / 备注</div>
                         <div class="text-slate-700 whitespace-pre-wrap text-xs leading-relaxed">{{ activeAsset.description }}</div>
+                    </div>
+                </div>
+
+                <!-- Child Components / Sub-Devices Section -->
+                <div class="border border-slate-200/80 rounded-xl p-4 bg-white shadow-sm space-y-3">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <i data-lucide="layers" class="w-4 h-4 text-indigo-600"></i>
+                            <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider">关联子设备 / 部件清单</h4>
+                            <span class="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[11px] rounded-full font-bold">
+                                {{ activeAsset.children?.length || 0 }}
+                            </span>
+                        </div>
+                        <button @click="openAddModal(activeAsset.id)" type="button"
+                                class="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-lg transition inline-flex items-center space-x-1 border border-indigo-200/60 shadow-sm">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                            <span>添加子部件</span>
+                        </button>
+                    </div>
+
+                    <!-- Child items list -->
+                    <div v-if="activeAsset.children && activeAsset.children.length > 0" class="space-y-2">
+                        <div v-for="child in activeAsset.children" :key="child.id"
+                             @click="openDetail(child.id)"
+                             class="p-2.5 bg-slate-50 hover:bg-indigo-50/50 border border-slate-200 rounded-lg cursor-pointer transition flex items-center justify-between group">
+                            <div class="flex items-center space-x-3">
+                                <div class="w-10 h-10 rounded-lg bg-slate-200 overflow-hidden shrink-0 flex items-center justify-center">
+                                    <img v-if="child.primary_thumb_url" :src="child.primary_thumb_url" class="w-full h-full object-cover">
+                                    <i v-else data-lucide="package" class="w-5 h-5 text-slate-400"></i>
+                                </div>
+                                <div>
+                                    <div class="flex items-center space-x-2">
+                                        <span class="font-mono text-xs font-bold text-indigo-600 group-hover:underline">{{ child.id }}</span>
+                                        <span class="text-xs font-semibold text-slate-800">{{ child.name }}</span>
+                                    </div>
+                                    <div class="text-[11px] text-slate-500 flex items-center space-x-2 mt-0.5">
+                                        <span>{{ child.location }}</span>
+                                        <span>•</span>
+                                        <span>{{ child.category }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-800">{{ child.status }}</span>
+                                <i data-lucide="chevron-right" class="w-4 h-4 text-slate-400 group-hover:text-indigo-600 transition"></i>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else class="text-center py-4 bg-slate-50/60 rounded-lg border border-dashed border-slate-200 text-xs text-slate-400">
+                        暂无关联子部件，点击右上角 “添加子部件” 即可为该主设备登记绑定零部件
                     </div>
                 </div>
 
@@ -1027,6 +1172,83 @@
     </div>
 
     <!-- ============================================================== -->
+    <!-- MODAL: TRANSLATION & NAMING RULES (AI SELF-LEARNING)           -->
+    <!-- ============================================================== -->
+    <div v-if="showTranslationsModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-xl w-full p-6 text-left max-h-[90vh] flex flex-col">
+            
+            <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                <h3 class="font-bold text-slate-900 text-base flex items-center space-x-2">
+                    <i data-lucide="languages" class="w-5 h-5 text-indigo-600"></i>
+                    <span>设备编号翻译与命名规则 (AI 自学习)</span>
+                </h3>
+                <button @click="showTranslationsModal = false" class="text-slate-400 hover:text-slate-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <p class="text-xs text-slate-500 mb-3 leading-relaxed">
+                系统通过前缀规则将缩写自动翻译为标准设备名称（例如 <code class="px-1.5 py-0.5 bg-slate-100 rounded text-indigo-600 font-mono font-bold">CPR001</code> 自动翻译为 <b>Capper 001</b>，<code class="px-1.5 py-0.5 bg-slate-100 rounded text-indigo-600 font-mono font-bold">PU.023</code> 翻译为 <b>Pump 023</b>，<code class="px-1.5 py-0.5 bg-slate-100 rounded text-indigo-600 font-mono font-bold">LBL02</code> 翻译为 <b>Labeller 02</b>）。<br>
+                <b>✨ 智能自学习</b>：当您手动输入并登记新资产名称后，系统将自动识别并永久记住该前缀的翻译规则！
+            </p>
+
+            <!-- Add / Edit Rule Form -->
+            <div class="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl mb-4">
+                <div class="text-xs font-semibold text-indigo-900 mb-2">手动添加或修改规则</div>
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input v-model="newTranslation.prefix" type="text" placeholder="ID前缀 (如 CPR / PU / LBL)"
+                           class="w-full sm:w-1/3 px-3 py-1.5 rounded-lg border border-slate-300 text-xs uppercase font-mono outline-none bg-white">
+                    <input v-model="newTranslation.name_prefix" type="text" placeholder="对应标准名称 (如 Capper / 旋盖机)"
+                           class="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 text-xs outline-none bg-white">
+                    <button @click="handleSaveTranslationRule"
+                            class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs rounded-lg transition shrink-0 shadow-sm">
+                        保存规则
+                    </button>
+                </div>
+            </div>
+
+            <!-- Rules List -->
+            <div class="flex-1 overflow-y-auto space-y-2 pr-1">
+                <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-between">
+                    <span>当前生效的翻译规则 ({{ translationsList.length }})</span>
+                    <span class="text-[11px] text-slate-400 font-normal">支持字母与数字自动拆分</span>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div v-for="t in translationsList" :key="t.prefix"
+                         class="p-2.5 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-between">
+                        <div>
+                            <div class="flex items-center space-x-1.5">
+                                <span class="font-mono text-xs font-bold text-indigo-600 bg-indigo-100/70 px-1.5 py-0.5 rounded">
+                                    {{ t.prefix }}
+                                </span>
+                                <i data-lucide="arrow-right" class="w-3 h-3 text-slate-400"></i>
+                                <span class="text-xs font-semibold text-slate-800">{{ t.name_prefix }}</span>
+                            </div>
+                            <div class="text-[10px] text-slate-400 mt-1">
+                                示例: {{ t.example_id || (t.prefix + '001') }} → {{ t.example_name || (t.name_prefix + ' 001') }}
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-1">
+                            <span v-if="t.is_system" class="text-[10px] text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded">内置</span>
+                            <span v-else class="text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-medium">AI自学</span>
+                            <button v-if="!t.is_system" @click="handleDeleteTranslationRule(t.prefix)" title="删除此规则" class="text-slate-400 hover:text-red-600 p-1">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-4 pt-3 border-t border-slate-100 flex justify-end">
+                <button @click="showTranslationsModal = false" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                    完成
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
     <!-- FULLSCREEN LIGHTBOX                                            -->
     <!-- ============================================================== -->
     <div v-if="showLightbox" @click="showLightbox = false"
@@ -1053,8 +1275,8 @@
 </div>
 
 <!-- Application Entrypoints -->
-<script src="/static/js/webauthn.js?v=20261112v5"></script>
-<script src="/static/js/app.js?v=20261112v5"></script>
+<script src="/static/js/webauthn.js?v=20261112v6"></script>
+<script src="/static/js/app.js?v=20261112v6"></script>
 </body>
 </html>
 

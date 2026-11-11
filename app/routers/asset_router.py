@@ -21,8 +21,9 @@ from PIL import Image, ImageOps
 from app.auth import get_current_user
 from app.config import UPLOAD_DIR, THUMB_DIR
 from app.database import get_db, rows_to_list, row_to_dict
-from app.models import AssetCreateRequest, AssetUpdateRequest
+from app.models import AssetCreateRequest, AssetUpdateRequest, TranslationRuleRequest
 from app.recognizer import recognize_asset_id_from_image
+from app.translator import translate_asset_id, learn_translation, parse_asset_id
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -77,6 +78,8 @@ def list_assets(
     location: Optional[str] = Query(None, description="筛选位置"),
     category: Optional[str] = Query(None, description="筛选类别"),
     status: Optional[str] = Query(None, description="筛选状态"),
+    parent_id: Optional[str] = Query(None, description="筛选所属父设备编号"),
+    hierarchy: Optional[str] = Query(None, description="层级筛选: all, root(仅主设备), children(仅子设备)"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
     user: dict = Depends(get_current_user),
@@ -87,8 +90,8 @@ def list_assets(
 
     if q:
         query_like = f"%{q.strip()}%"
-        conditions.append("(a.id LIKE ? OR a.name LIKE ? OR a.location LIKE ? OR a.description LIKE ?)")
-        params.extend([query_like, query_like, query_like, query_like])
+        conditions.append("(a.id LIKE ? OR a.name LIKE ? OR a.location LIKE ? OR a.description LIKE ? OR p.name LIKE ?)")
+        params.extend([query_like, query_like, query_like, query_like, query_like])
 
     if location and location.strip():
         conditions.append("a.location = ?")
@@ -102,20 +105,32 @@ def list_assets(
         conditions.append("a.status = ?")
         params.append(status.strip())
 
+    if parent_id and parent_id.strip():
+        conditions.append("a.parent_id = ?")
+        params.append(parent_id.strip())
+
+    if hierarchy == "root":
+        conditions.append("(a.parent_id IS NULL OR a.parent_id = '')")
+    elif hierarchy == "children":
+        conditions.append("(a.parent_id IS NOT NULL AND a.parent_id != '')")
+
     where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
     with get_db() as conn:
         # Total count
-        count_sql = f"SELECT COUNT(*) as count FROM assets a {where_clause}"
+        count_sql = f"SELECT COUNT(*) as count FROM assets a LEFT JOIN assets p ON a.parent_id = p.id {where_clause}"
         total = conn.execute(count_sql, params).fetchone()["count"]
 
-        # Main query with primary image filename and images count
+        # Main query with primary image filename, parent info, and children count
         query_sql = f"""
             SELECT a.id, a.name, a.location, a.category, a.status, a.description,
+                   a.parent_id, p.name AS parent_name,
                    a.primary_image_id, a.created_at, a.updated_at,
                    img.filename AS primary_image_filename,
-                   (SELECT COUNT(*) FROM asset_images WHERE asset_id = a.id) AS image_count
+                   (SELECT COUNT(*) FROM asset_images WHERE asset_id = a.id) AS image_count,
+                   (SELECT COUNT(*) FROM assets WHERE parent_id = a.id) AS children_count
             FROM assets a
+            LEFT JOIN assets p ON a.parent_id = p.id
             LEFT JOIN asset_images img ON a.primary_image_id = img.id
             {where_clause}
             ORDER BY a.updated_at DESC
@@ -149,13 +164,19 @@ async def recognize_id(
     user: dict = Depends(get_current_user),
 ):
     """
-    Auto-recognizes Asset ID from an uploaded image (barcodes, QR codes, or OCR text labels).
+    Auto-recognizes Asset ID from an uploaded image (barcodes, QR codes, or OCR text labels),
+    and translates ID into human-friendly device name (e.g. CPR001 -> Capper 001, PU.023 -> Pump 023).
     """
     contents = await file.read()
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="未收到有效的图片内容")
 
     result = recognize_asset_id_from_image(contents)
+    best_id = result.get("best_id", "")
+    with get_db() as conn:
+        translated_name, rule = translate_asset_id(best_id, conn)
+    result["translated_name"] = translated_name
+    result["translation_rule"] = rule
     return result
 
 
@@ -197,6 +218,71 @@ def get_locations(user: dict = Depends(get_current_user)):
         return rows_to_list(rows)
 
 
+@router.get("/meta/parent-options")
+def get_parent_options(exclude_id: Optional[str] = Query(None), user: dict = Depends(get_current_user)):
+    """
+    Returns list of assets for parent device selector dropdown.
+    """
+    with get_db() as conn:
+        if exclude_id:
+            rows = conn.execute(
+                "SELECT id, name, location, category FROM assets WHERE id != ? ORDER BY id ASC LIMIT 500",
+                (exclude_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, name, location, category FROM assets ORDER BY id ASC LIMIT 500"
+            ).fetchall()
+        return rows_to_list(rows)
+
+
+@router.get("/meta/translate")
+def get_translation(id: str = Query(..., description="待翻译资产编号"), user: dict = Depends(get_current_user)):
+    """
+    Translates an ID into human friendly name candidate (e.g. CPR001 -> Capper 001, PU.023 -> Pump 023).
+    """
+    with get_db() as conn:
+        translated, rule = translate_asset_id(id.strip(), conn)
+    return {"id": id, "translated_name": translated, "rule": rule}
+
+
+@router.get("/meta/translations")
+def list_translations(user: dict = Depends(get_current_user)):
+    """
+    Lists all learned and built-in prefix translation rules.
+    """
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM id_translations ORDER BY is_system ASC, prefix ASC").fetchall()
+        return rows_to_list(rows)
+
+
+@router.post("/meta/translations")
+def upsert_translation(req: TranslationRuleRequest, user: dict = Depends(get_current_user)):
+    """
+    Manually creates or updates an ID prefix translation rule.
+    """
+    prefix = req.prefix.strip().upper()
+    now = get_now_iso()
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO id_translations (prefix, name_prefix, example_id, example_name, is_system, updated_at)
+            VALUES (?, ?, ?, ?, 0, ?)
+            ON CONFLICT(prefix) DO UPDATE SET
+                name_prefix = excluded.name_prefix,
+                example_id = excluded.example_id,
+                example_name = excluded.example_name,
+                updated_at = excluded.updated_at
+        """, (prefix, req.name_prefix.strip(), req.example_id or f"{prefix}001", req.example_name or f"{req.name_prefix} 001", now))
+    return {"success": True, "prefix": prefix}
+
+
+@router.delete("/meta/translations/{prefix}")
+def delete_translation(prefix: str, user: dict = Depends(get_current_user)):
+    with get_db() as conn:
+        conn.execute("DELETE FROM id_translations WHERE prefix = ?", (prefix.strip().upper(),))
+    return {"success": True}
+
+
 @router.get("/{asset_id}")
 def get_asset(asset_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
@@ -204,6 +290,34 @@ def get_asset(asset_id: str, user: dict = Depends(get_current_user)):
         if not row:
             raise HTTPException(status_code=404, detail="未找到该资产信息")
         asset = dict(row)
+
+        # Get parent device details if linked
+        if asset.get("parent_id"):
+            p_row = conn.execute(
+                "SELECT id, name, location, category, status FROM assets WHERE id = ?",
+                (asset["parent_id"],),
+            ).fetchone()
+            asset["parent"] = dict(p_row) if p_row else None
+        else:
+            asset["parent"] = None
+
+        # Get child components / sub-devices
+        c_rows = conn.execute(
+            """
+            SELECT a.id, a.name, a.location, a.category, a.status, a.updated_at,
+                   img.filename AS primary_image_filename
+            FROM assets a
+            LEFT JOIN asset_images img ON a.primary_image_id = img.id
+            WHERE a.parent_id = ?
+            ORDER BY a.id ASC
+            """,
+            (asset_id,),
+        ).fetchall()
+        children = rows_to_list(c_rows)
+        for c in children:
+            fn = c.pop("primary_image_filename", None)
+            c["primary_thumb_url"] = f"/uploads/thumbnails/{fn.replace('.jpg', '_thumb.jpg')}" if fn else None
+        asset["children"] = children
 
         # Get all images for this asset
         img_rows = conn.execute(
@@ -230,16 +344,25 @@ def get_asset(asset_id: str, user: dict = Depends(get_current_user)):
 def create_asset(req: AssetCreateRequest, user: dict = Depends(get_current_user)):
     now = get_now_iso()
     asset_id = req.id.strip()
+    parent_id = req.parent_id.strip() if req.parent_id and req.parent_id.strip() else None
+
+    if parent_id and parent_id == asset_id:
+        raise HTTPException(status_code=400, detail="设备不能将自身设为所属父设备")
 
     with get_db() as conn:
         exists = conn.execute("SELECT id FROM assets WHERE id = ?", (asset_id,)).fetchone()
         if exists:
             raise HTTPException(status_code=400, detail=f"资产编号 '{asset_id}' 已存在，请更换！")
 
+        if parent_id:
+            p_exists = conn.execute("SELECT id FROM assets WHERE id = ?", (parent_id,)).fetchone()
+            if not p_exists:
+                raise HTTPException(status_code=400, detail=f"指定的父设备 '{parent_id}' 不存在")
+
         conn.execute(
             """
-            INSERT INTO assets (id, name, location, category, status, description, primary_image_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            INSERT INTO assets (id, name, location, category, status, description, parent_id, primary_image_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 asset_id,
@@ -248,10 +371,14 @@ def create_asset(req: AssetCreateRequest, user: dict = Depends(get_current_user)
                 req.category.strip() if req.category else "通用",
                 req.status.strip() if req.status else "在用",
                 req.description.strip() if req.description else "",
+                parent_id,
                 now,
                 now,
             ),
         )
+
+        # Smart self-learning: Learn translation mapping from user's input
+        learn_translation(asset_id, req.name.strip(), conn)
 
     return {"success": True, "id": asset_id, "message": "资产创建成功"}
 
@@ -281,12 +408,27 @@ def update_asset(asset_id: str, req: AssetUpdateRequest, user: dict = Depends(ge
         if req.description is not None:
             fields.append("description = ?")
             params.append(req.description.strip())
+        if req.parent_id is not None:
+            p_id = req.parent_id.strip() if req.parent_id.strip() else None
+            if p_id == asset_id:
+                raise HTTPException(status_code=400, detail="不能将设备自身设为父设备")
+            if p_id:
+                # Circular dependency check: parent cannot be one of current asset's children
+                is_child = conn.execute("SELECT id FROM assets WHERE parent_id = ? AND id = ?", (asset_id, p_id)).fetchone()
+                if is_child:
+                    raise HTTPException(status_code=400, detail="不能将现有的子设备设为父设备，这会造成循环从属关系")
+            fields.append("parent_id = ?")
+            params.append(p_id)
 
         if fields:
             fields.append("updated_at = ?")
             params.append(now)
             params.append(asset_id)
             conn.execute(f"UPDATE assets SET {', '.join(fields)} WHERE id = ?", params)
+
+        # Smart self-learning on update
+        if req.name:
+            learn_translation(asset_id, req.name.strip(), conn)
 
     return {"success": True, "message": "资产信息更新成功"}
 
@@ -455,14 +597,21 @@ def export_assets_csv(user: dict = Depends(get_current_user)):
     # Write UTF-8 BOM so Microsoft Excel opens it seamlessly without garbled Chinese
     output.write('\ufeff')
     writer = csv.writer(output)
-    writer.writerow(["资产编号(ID)", "资产名称", "存放位置(Location)", "分类", "状态", "备注说明", "创建时间", "更新时间"])
+    writer.writerow(["资产编号(ID)", "资产名称", "所属父设备编号", "所属父设备名称", "存放位置(Location)", "分类", "状态", "备注说明", "创建时间", "更新时间"])
 
     with get_db() as conn:
-        cursor = conn.execute("SELECT id, name, location, category, status, description, created_at, updated_at FROM assets ORDER BY id ASC")
+        cursor = conn.execute("""
+            SELECT a.id, a.name, a.parent_id, p.name AS parent_name, a.location, a.category, a.status, a.description, a.created_at, a.updated_at
+            FROM assets a
+            LEFT JOIN assets p ON a.parent_id = p.id
+            ORDER BY a.id ASC
+        """)
         for row in cursor.fetchall():
             writer.writerow([
                 row["id"],
                 row["name"],
+                row["parent_id"] or "",
+                row["parent_name"] or "",
                 row["location"],
                 row["category"],
                 row["status"],

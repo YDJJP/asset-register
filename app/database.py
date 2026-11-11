@@ -58,9 +58,11 @@ def init_db():
             category TEXT DEFAULT '通用',
             status TEXT DEFAULT '在用',
             description TEXT DEFAULT '',
+            parent_id TEXT,
             primary_image_id TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (parent_id) REFERENCES assets(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS asset_images (
@@ -75,12 +77,44 @@ def init_db():
             FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS id_translations (
+            prefix TEXT PRIMARY KEY,
+            name_prefix TEXT NOT NULL,
+            example_id TEXT,
+            example_name TEXT,
+            is_system INTEGER DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_assets_location ON assets(location);
         CREATE INDEX IF NOT EXISTS idx_assets_status ON assets(status);
         CREATE INDEX IF NOT EXISTS idx_assets_category ON assets(category);
         CREATE INDEX IF NOT EXISTS idx_asset_images_asset ON asset_images(asset_id);
         CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_id_translations_prefix ON id_translations(prefix);
         """)
+
+        # Migration: Check if parent_id column exists for existing tables
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(assets)")
+        columns = [row["name"] for row in cur.fetchall()]
+        if "parent_id" not in columns:
+            conn.execute("ALTER TABLE assets ADD COLUMN parent_id TEXT REFERENCES assets(id) ON DELETE SET NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_parent ON assets(parent_id)")
+
+        # Populate built-in translations if table is empty
+        cur.execute("SELECT COUNT(*) as cnt FROM id_translations")
+        if cur.fetchone()["cnt"] == 0:
+            now = get_now_iso()
+            from app.translator import DEFAULT_TRANSLATIONS
+            defaults = [
+                (prefix, name, f"{prefix}001", f"{name} 001", 1, now)
+                for prefix, name in DEFAULT_TRANSLATIONS.items()
+            ]
+            cur.executemany("""
+                INSERT OR IGNORE INTO id_translations (prefix, name_prefix, example_id, example_name, is_system, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, defaults)
 
 def row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     if row is None:

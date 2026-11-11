@@ -60,21 +60,68 @@ const app = createApp({
             category: '通用',
             status: '在用',
             description: '',
+            parent_id: '',
         });
+        const parentOptions = ref([]);
         const pendingImages = ref([]); // File objects for new asset creation
         const isSavingAsset = ref(false);
         const isRecognizingId = ref(false);
         const idCandidates = ref([]);
 
-        // Name Candidates: ID + other recognized OCR / Barcode text candidates
+        // Hierarchy & Parent Filters
+        const selectedHierarchy = ref('all'); // 'all', 'root', 'children'
+        const selectedParentFilter = ref('');
+
+        // Translation Dictionary & Rules
+        const translationsList = ref([]);
+        const showTranslationsModal = ref(false);
+        const newTranslation = ref({ prefix: '', name_prefix: '' });
+
+        const loadTranslations = async () => {
+            try {
+                const res = await fetch('/api/assets/meta/translations');
+                if (res.ok) {
+                    translationsList.value = await res.json();
+                }
+            } catch (err) {
+                console.warn('Failed to load translations:', err);
+            }
+        };
+
+        const translateIdLocally = (id) => {
+            if (!id) return '';
+            const m = id.trim().match(/^([a-zA-Z]+)([\s._\-/]*)(.*)$/);
+            if (!m) return '';
+            const prefix = m[1].toUpperCase();
+            const suffix = (m[3] || '').trim().replace(/^[._\-\s]+/, '');
+
+            const rule = translationsList.value.find(t => t.prefix === prefix);
+            if (!rule) return '';
+            return suffix ? `${rule.name_prefix} ${suffix}` : rule.name_prefix;
+        };
+
+        // Name Candidates: Translated Name + ID + other recognized OCR / Barcode text candidates
         const nameCandidates = computed(() => {
             const list = [];
             const currentId = (assetForm.value.id || '').trim();
-            // Include non-generic ID as primary candidate
-            if (currentId && !currentId.startsWith('AST-')) {
+
+            // 1. Translated Name from ID (e.g. CPR001 -> Capper 001, PU.023 -> Pump 023)
+            const translated = translateIdLocally(currentId);
+            if (translated && !list.includes(translated)) {
+                list.push(translated);
+            }
+
+            // 2. Current Asset ID itself (if non-generic AST-)
+            if (currentId && !currentId.startsWith('AST-') && !list.includes(currentId)) {
                 list.push(currentId);
             }
+
+            // 3. OCR Candidates & their translations
             for (let c of idCandidates.value) {
+                const cTrans = translateIdLocally(c);
+                if (cTrans && !list.includes(cTrans)) {
+                    list.push(cTrans);
+                }
                 if (c && !list.includes(c)) {
                     list.push(c);
                 }
@@ -84,6 +131,18 @@ const app = createApp({
             }
             return list;
         });
+
+        // Auto-suggest translation when user edits ID
+        const handleIdChange = () => {
+            const currentId = (assetForm.value.id || '').trim();
+            if (!currentId) return;
+            const trans = translateIdLocally(currentId);
+            if (trans) {
+                if (!assetForm.value.name.trim() || assetForm.value.name === currentId || nameCandidates.value.includes(assetForm.value.name)) {
+                    assetForm.value.name = trans;
+                }
+            }
+        };
 
         // Asset Detail View
         const showDetailModal = ref(false);
@@ -272,6 +331,8 @@ const app = createApp({
                 if (selectedLocation.value) params.append('location', selectedLocation.value);
                 if (selectedCategory.value) params.append('category', selectedCategory.value);
                 if (selectedStatus.value) params.append('status', selectedStatus.value);
+                if (selectedHierarchy.value !== 'all') params.append('hierarchy', selectedHierarchy.value);
+                if (selectedParentFilter.value) params.append('parent_id', selectedParentFilter.value);
 
                 const res = await fetch(`/api/assets?${params.toString()}`);
                 if (res.ok) {
@@ -306,6 +367,30 @@ const app = createApp({
             }
         };
 
+        const loadParentOptions = async (excludeId = null) => {
+            try {
+                const url = excludeId
+                    ? `/api/assets/meta/parent-options?exclude_id=${encodeURIComponent(excludeId)}`
+                    : '/api/assets/meta/parent-options';
+                const res = await fetch(url);
+                if (res.ok) {
+                    parentOptions.value = await res.json();
+                }
+            } catch (err) {
+                console.warn('Failed to load parent options:', err);
+            }
+        };
+
+        const setHierarchyFilter = (mode) => {
+            selectedHierarchy.value = mode;
+            loadAssets(1);
+        };
+
+        const filterByParent = (parentId) => {
+            selectedParentFilter.value = parentId;
+            loadAssets(1);
+        };
+
         // Auto-generate Asset ID
         const generateAssetId = () => {
             const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, '');
@@ -313,25 +398,39 @@ const app = createApp({
             assetForm.value.id = `AST-${dateStr}-${randSuffix}`;
         };
 
-        // Open Add Asset Modal
-        const openAddModal = () => {
+        // Open Add Asset Modal (supports passing parentId when adding a child)
+        const openAddModal = async (parentId = null) => {
             isEditing.value = false;
+            let preLocation = selectedLocation.value || '';
+            let preCategory = '通用';
+
+            if (parentId) {
+                const parentObj = assets.value.find(a => a.id === parentId);
+                if (parentObj) {
+                    preLocation = parentObj.location || preLocation;
+                    preCategory = parentObj.category || preCategory;
+                }
+            }
+
             assetForm.value = {
                 id: '',
                 name: '',
-                location: selectedLocation.value || '',
-                category: '通用',
+                location: preLocation,
+                category: preCategory,
                 status: '在用',
                 description: '',
+                parent_id: parentId || '',
             };
             pendingImages.value = [];
+            idCandidates.value = [];
             generateAssetId();
+            await loadParentOptions();
             showAssetModal.value = true;
             refreshIcons();
         };
 
         // Open Edit Asset Modal
-        const openEditModal = (asset) => {
+        const openEditModal = async (asset) => {
             isEditing.value = true;
             assetForm.value = {
                 id: asset.id,
@@ -340,8 +439,10 @@ const app = createApp({
                 category: asset.category || '通用',
                 status: asset.status || '在用',
                 description: asset.description || '',
+                parent_id: asset.parent_id || '',
             };
             pendingImages.value = [];
+            await loadParentOptions(asset.id);
             showAssetModal.value = true;
             refreshIcons();
         };
@@ -481,11 +582,12 @@ const app = createApp({
                     if (data.best_id) {
                         assetForm.value.id = data.best_id;
                         idCandidates.value = data.candidates || [];
-                        // Default asset name to recognized ID if currently blank
+                        const trans = data.translated_name || translateIdLocally(data.best_id);
+                        // Default asset name to translated name (e.g. Pump 023 / Capper 001) or raw ID if currently blank
                         if (!assetForm.value.name.trim()) {
-                            assetForm.value.name = data.best_id;
+                            assetForm.value.name = trans || data.best_id;
                         }
-                        showToast(`✨ 已智能识别编号: ${data.best_id}`);
+                        showToast(`✨ 已识别编号: ${data.best_id}${trans ? ` (${trans})` : ''}`);
                     } else {
                         showToast('未在图片中检测到明显的资产编号或条码', 'info');
                     }
@@ -595,6 +697,7 @@ const app = createApp({
                             category: assetForm.value.category,
                             status: assetForm.value.status,
                             description: assetForm.value.description,
+                            parent_id: assetForm.value.parent_id || null,
                         }),
                     });
                     if (!updateRes.ok) {
@@ -605,13 +708,59 @@ const app = createApp({
                 }
 
                 showAssetModal.value = false;
+                await loadTranslations();
                 await loadAssets(currentPage.value);
                 await loadStats();
                 await loadLocations();
+                if (activeAsset.value && activeAsset.value.id === assetForm.value.id) {
+                    await openDetail(assetForm.value.id);
+                }
             } catch (err) {
                 showToast(err.message, 'error');
             } finally {
                 isSavingAsset.value = false;
+            }
+        };
+
+        const handleSaveTranslationRule = async () => {
+            if (!newTranslation.value.prefix.trim() || !newTranslation.value.name_prefix.trim()) {
+                showToast('请填写ID前缀及对应设备名称', 'error');
+                return;
+            }
+            try {
+                const res = await fetch('/api/assets/meta/translations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prefix: newTranslation.value.prefix.trim(),
+                        name_prefix: newTranslation.value.name_prefix.trim(),
+                    }),
+                });
+                if (res.ok) {
+                    showToast(`已保存规则: ${newTranslation.value.prefix.toUpperCase()} -> ${newTranslation.value.name_prefix}`);
+                    newTranslation.value = { prefix: '', name_prefix: '' };
+                    await loadTranslations();
+                } else {
+                    const err = await res.json();
+                    showToast(err.detail || '保存失败', 'error');
+                }
+            } catch (e) {
+                showToast('保存失败: ' + e.message, 'error');
+            }
+        };
+
+        const handleDeleteTranslationRule = async (prefix) => {
+            if (!confirm(`确定要移除规则 ${prefix} 吗？`)) return;
+            try {
+                const res = await fetch(`/api/assets/meta/translations/${encodeURIComponent(prefix)}`, {
+                    method: 'DELETE',
+                });
+                if (res.ok) {
+                    showToast('已移除规则');
+                    await loadTranslations();
+                }
+            } catch (e) {
+                showToast('删除失败: ' + e.message, 'error');
             }
         };
 
@@ -867,6 +1016,7 @@ const app = createApp({
 
         onMounted(() => {
             checkAuthStatus();
+            loadTranslations();
         });
 
         return {
@@ -898,12 +1048,18 @@ const app = createApp({
             selectedLocation,
             selectedCategory,
             selectedStatus,
+            selectedHierarchy,
+            setHierarchyFilter,
+            selectedParentFilter,
+            filterByParent,
             locationsList,
             stats,
             loadAssets,
             showAssetModal,
             isEditing,
             assetForm,
+            parentOptions,
+            handleIdChange,
             pendingImages,
             isCompressingImages,
             formatFileSize,
@@ -944,6 +1100,11 @@ const app = createApp({
             exportCsv,
             filterByLocation,
             setFormLocation,
+            translationsList,
+            showTranslationsModal,
+            newTranslation,
+            handleSaveTranslationRule,
+            handleDeleteTranslationRule,
             toast,
             refreshIcons,
         };
