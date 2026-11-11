@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  asset-register:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: asset-register:latest
+    container_name: asset-register
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化存储 SQLite 数据库与上传的资产图片
+      - ./data:/app/data
+    environment:
+      - DATA_DIR=/app/data
+      - RP_NAME=Asset Register 资产登记
+      # 提示：若使用 Cloudflare Tunnel 或域名访问，可固定指定域名（留空则系统自动根据访问请求头动态提取）:
+      # - RP_ID=assets.yourdomain.com
+      # - RP_ORIGIN=https://assets.yourdomain.com
+      # - SECRET_KEY=your_random_secret_string_here
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 【可选方案】：如果您希望在同一个 Docker Compose 编排中直接运行 Cloudflare Tunnel (cloudflared)：
+  # 取消以下注释，并在 .env 或环境变量中填入您的 Cloudflare Tunnel Token 即可：
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: asset-cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - asset-register

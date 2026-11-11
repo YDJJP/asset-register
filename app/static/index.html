@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Asset Register - 资产登记管理系统</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
+    
+    <!-- Self-hosted vendor assets (100% offline & intranet compatible) -->
+    <script src="/static/vendor/tailwind.cdn.js"></script>
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/vendor/simplewebauthn-browser.min.js"></script>
+    <script src="/static/vendor/qrcode.min.js"></script>
+    <script src="/static/vendor/html5-qrcode.min.js"></script>
+    <script src="/static/vendor/lucide.min.js"></script>
+    
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen flex flex-col font-sans" @paste="handlePaste">
+<div id="app" v-cloak class="flex flex-col min-h-screen">
+
+    <!-- HTTPS / Security Warning Banner -->
+    <div v-if="!isSecureContext" class="bg-amber-500 text-white px-4 py-2.5 text-xs sm:text-sm font-medium flex items-center justify-between shadow-md">
+        <div class="flex items-center space-x-2 max-w-5xl mx-auto">
+            <span class="text-base">⚠️</span>
+            <span>当前访问未启用 <b>HTTPS</b>。根据浏览器安全规范，<b>Passkey (指纹/Face ID/硬件密钥)</b> 必须在 HTTPS 或 localhost 下才能正常调用。在 1Panel 中配置域名并开启免费 SSL 证书即可完美支持！</span>
+        </div>
+    </div>
+
+    <!-- Top Navigation Bar -->
+    <header class="sticky top-0 z-30 glass-header border-b border-slate-200/80 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
+                    <i data-lucide="box" class="w-5 h-5"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg text-slate-900 leading-tight">Asset Register</h1>
+                    <p class="text-xs text-slate-500 hidden sm:block">资产登记 & 位置图片管理系统</p>
+                </div>
+            </div>
+
+            <!-- Header Actions when Logged In -->
+            <div v-if="authStatus.is_authenticated" class="flex items-center space-x-2 sm:space-x-3">
+                <!-- Camera QR Scanner Button -->
+                <button @click="openScanner" title="扫码识别资产"
+                        class="p-2 sm:px-3 sm:py-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg flex items-center space-x-1.5 transition text-sm">
+                    <i data-lucide="scan" class="w-4 h-4"></i>
+                    <span class="hidden md:inline">扫码寻物</span>
+                </button>
+
+                <!-- Export CSV Button -->
+                <button @click="exportCsv" title="导出全部数据为 CSV"
+                        class="p-2 sm:px-3 sm:py-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg flex items-center space-x-1.5 transition text-sm">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    <span class="hidden md:inline">导出</span>
+                </button>
+
+                <!-- Add Asset Button -->
+                <button @click="openAddModal"
+                        class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm rounded-lg shadow-sm shadow-indigo-500/20 flex items-center space-x-1.5 transition active:scale-95">
+                    <i data-lucide="plus" class="w-4 h-4"></i>
+                    <span>新建资产</span>
+                </button>
+
+                <!-- User Profile & Passkey Settings -->
+                <button @click="openUserModal"
+                        class="flex items-center space-x-2 pl-2 pr-3 py-1 bg-slate-100 hover:bg-slate-200/80 rounded-full transition text-sm text-slate-700">
+                    <div class="w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-semibold text-xs">
+                        {{ (authStatus.user?.display_name || authStatus.user?.username || 'U')[0].toUpperCase() }}
+                    </div>
+                    <span class="font-medium hidden sm:inline max-w-[100px] truncate">{{ authStatus.user?.display_name || authStatus.user?.username }}</span>
+                    <i data-lucide="key-round" class="w-3.5 h-3.5 text-slate-400"></i>
+                </button>
+
+                <!-- Logout -->
+                <button @click="handleLogout" title="退出登录"
+                        class="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition">
+                    <i data-lucide="log-out" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+        <!-- Loading Auth State -->
+        <div v-if="isAuthChecking" class="flex flex-col items-center justify-center py-20 text-slate-400">
+            <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mb-3"></div>
+            <p class="text-sm">正在载入系统...</p>
+        </div>
+
+        <!-- 1. INITIAL PASSKEY SETUP (when no users exist) -->
+        <div v-else-if="!authStatus.is_authenticated && !authStatus.has_users" class="max-w-md mx-auto my-12">
+            <div class="bg-white rounded-2xl shadow-xl border border-slate-100 p-6 sm:p-8 text-center">
+                <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-blue-600 rounded-2xl mx-auto flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 mb-5">
+                    <i data-lucide="fingerprint" class="w-8 h-8"></i>
+                </div>
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">欢迎使用资产登记系统</h2>
+                <p class="text-slate-500 text-sm mb-6">系统尚未初始化。请创建第一位管理员，并通过您设备的 <b>Passkey (指纹 / 面容 / 安全密钥)</b> 激活系统！</p>
+
+                <div v-if="authError" class="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 text-xs sm:text-sm rounded-lg text-left">
+                    {{ authError }}
+                </div>
+
+                <div class="space-y-4 text-left">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">管理员账号</label>
+                        <input v-model="setupForm.username" type="text" placeholder="例如 admin"
+                               class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm outline-none transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">显示名称</label>
+                        <input v-model="setupForm.displayName" type="text" placeholder="例如 系统管理员"
+                               class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm outline-none transition">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">首台设备名称</label>
+                        <input v-model="setupForm.deviceName" type="text" placeholder="例如 我的 MacBook / iPhone / PC"
+                               class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm outline-none transition">
+                    </div>
+
+                    <button @click="handleInitialSetup" :disabled="authLoading"
+                            class="w-full mt-2 py-3 px-4 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-medium text-sm rounded-xl shadow-lg shadow-indigo-500/25 flex items-center justify-center space-x-2 transition disabled:opacity-50">
+                        <i v-if="!authLoading" data-lucide="shield-check" class="w-5 h-5"></i>
+                        <span v-if="authLoading" class="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
+                        <span>{{ authLoading ? '请在系统弹窗中验证指纹/面容...' : '生成 Passkey 并激活系统' }}</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. PASSKEY LOGIN SCREEN (when user not logged in) -->
+        <div v-else-if="!authStatus.is_authenticated && authStatus.has_users" class="max-w-md mx-auto my-14">
+            <div class="bg-white rounded-2xl shadow-xl border border-slate-100 p-6 sm:p-8 text-center">
+                <div class="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl mx-auto flex items-center justify-center mb-5 border border-indigo-100">
+                    <i data-lucide="fingerprint" class="w-8 h-8"></i>
+                </div>
+                <h2 class="text-2xl font-bold text-slate-900 mb-1.5">Passkey 免密登录</h2>
+                <p class="text-slate-500 text-sm mb-6">使用绑定的生物识别（指纹/面容）或硬件密钥安全访问</p>
+
+                <div v-if="authError" class="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 text-xs sm:text-sm rounded-lg text-left">
+                    {{ authError }}
+                </div>
+
+                <div class="space-y-4">
+                    <button @click="handlePasskeyLogin" :disabled="authLoading"
+                            class="w-full py-3.5 px-4 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-medium text-sm rounded-xl shadow-lg shadow-indigo-500/25 flex items-center justify-center space-x-2 transition active:scale-98 disabled:opacity-50">
+                        <i v-if="!authLoading" data-lucide="fingerprint" class="w-5 h-5"></i>
+                        <span v-if="authLoading" class="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
+                        <span>{{ authLoading ? '请轻触指纹 / 面容识别...' : '使用 Passkey 快捷登录' }}</span>
+                    </button>
+
+                    <div class="relative my-4">
+                        <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200"></div></div>
+                        <div class="relative flex justify-center text-xs uppercase"><span class="bg-white px-2 text-slate-400">或指定用户名</span></div>
+                    </div>
+
+                    <div class="flex space-x-2">
+                        <input v-model="loginForm.username" type="text" placeholder="输入用户名 (选填)"
+                               class="flex-1 px-3.5 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm outline-none">
+                        <button @click="handlePasskeyLogin" :disabled="authLoading"
+                                class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                            验证
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. MAIN ASSET REGISTER DASHBOARD (Logged in) -->
+        <div v-else class="space-y-6">
+
+            <!-- Stats Bar -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                <div class="bg-white p-4 rounded-xl border border-slate-200/70 shadow-sm flex items-center space-x-3.5">
+                    <div class="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                        <i data-lucide="package" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500 font-medium">总资产数</div>
+                        <div class="text-xl font-bold text-slate-900">{{ stats.total_assets }}</div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-xl border border-slate-200/70 shadow-sm flex items-center space-x-3.5">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                        <i data-lucide="map-pin" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500 font-medium">存放位置</div>
+                        <div class="text-xl font-bold text-slate-900">{{ stats.total_locations }} <span class="text-xs font-normal text-slate-400">个地点</span></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-xl border border-slate-200/70 shadow-sm flex items-center space-x-3.5">
+                    <div class="w-10 h-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center">
+                        <i data-lucide="image" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500 font-medium">照片总数</div>
+                        <div class="text-xl font-bold text-slate-900">{{ stats.total_images }} <span class="text-xs font-normal text-slate-400">张</span></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-xl border border-slate-200/70 shadow-sm flex items-center space-x-3.5">
+                    <div class="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                        <i data-lucide="activity" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500 font-medium">在用状态</div>
+                        <div class="text-xl font-bold text-slate-900">
+                            {{ (stats.by_status.find(s => s.status === '在用')?.count || 0) }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Locations Quick Filter Chips -->
+            <div v-if="locationsList.length > 0" class="flex items-center space-x-2 overflow-x-auto pb-1 pt-0.5 text-xs no-scrollbar">
+                <span class="text-slate-400 font-medium flex items-center shrink-0 pr-1">
+                    <i data-lucide="filter" class="w-3.5 h-3.5 mr-1"></i> 位置快速筛选:
+                </span>
+                <button @click="filterByLocation('')"
+                        :class="[selectedLocation === '' ? 'bg-indigo-600 text-white font-semibold shadow-sm' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50']"
+                        class="px-3 py-1.5 rounded-full shrink-0 transition flex items-center space-x-1">
+                    <span>全部</span>
+                    <span class="opacity-75">({{ stats.total_assets }})</span>
+                </button>
+                <button v-for="loc in locationsList" :key="loc.location"
+                        @click="filterByLocation(loc.location)"
+                        :class="[selectedLocation === loc.location ? 'bg-indigo-600 text-white font-semibold shadow-sm' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50']"
+                        class="px-3 py-1.5 rounded-full shrink-0 transition flex items-center space-x-1">
+                    <i data-lucide="map-pin" class="w-3 h-3"></i>
+                    <span>{{ loc.location }}</span>
+                    <span class="opacity-75">({{ loc.count }})</span>
+                </button>
+            </div>
+
+            <!-- Search & Filters Header -->
+            <div class="bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div class="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <!-- Search Input -->
+                    <div class="relative flex-1">
+                        <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input v-model="searchQuery" @keyup.enter="loadAssets(1)"
+                               type="text" placeholder="搜索资产 ID、名称、位置、备注..."
+                               class="w-full pl-9 pr-8 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                        <button v-if="searchQuery" @click="searchQuery = ''; loadAssets(1)" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                            <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+
+                    <!-- Category Filter -->
+                    <select v-model="selectedCategory" @change="loadAssets(1)"
+                            class="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-700 outline-none">
+                        <option value="">全部类别</option>
+                        <option value="通用">通用</option>
+                        <option value="电子数码">电子数码</option>
+                        <option value="办公家具">办公家具</option>
+                        <option value="仪器设备">仪器设备</option>
+                        <option value="工具耗材">工具耗材</option>
+                        <option value="生活家电">生活家电</option>
+                        <option value="其他">其他</option>
+                    </select>
+
+                    <!-- Status Filter -->
+                    <select v-model="selectedStatus" @change="loadAssets(1)"
+                            class="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white text-slate-700 outline-none">
+                        <option value="">全部状态</option>
+                        <option value="在用">在用 (In Use)</option>
+                        <option value="闲置">闲置 (Available)</option>
+                        <option value="维修中">维修中 (Maintenance)</option>
+                        <option value="借出">借出 (Borrowed)</option>
+                        <option value="报废">报废 (Scrapped)</option>
+                    </select>
+
+                    <button @click="loadAssets(1)" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition shrink-0">
+                        筛选
+                    </button>
+                </div>
+
+                <!-- View Switcher -->
+                <div class="flex items-center space-x-1 shrink-0 self-end md:self-center border border-slate-200 rounded-lg p-1 bg-slate-50">
+                    <button @click="viewMode = 'grid'" :class="[viewMode === 'grid' ? 'bg-white shadow-sm text-indigo-600 font-medium' : 'text-slate-500 hover:text-slate-800']"
+                            class="p-1.5 rounded-md transition text-xs flex items-center space-x-1">
+                        <i data-lucide="layout-grid" class="w-4 h-4"></i>
+                        <span class="hidden sm:inline">图文卡片</span>
+                    </button>
+                    <button @click="viewMode = 'table'" :class="[viewMode === 'table' ? 'bg-white shadow-sm text-indigo-600 font-medium' : 'text-slate-500 hover:text-slate-800']"
+                            class="p-1.5 rounded-md transition text-xs flex items-center space-x-1">
+                        <i data-lucide="list" class="w-4 h-4"></i>
+                        <span class="hidden sm:inline">列表视图</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div v-if="isLoadingAssets" class="text-center py-20 text-slate-400">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto mb-2"></div>
+                <p class="text-xs">加载资产数据中...</p>
+            </div>
+
+            <!-- Empty State -->
+            <div v-else-if="assets.length === 0" class="bg-white rounded-2xl border border-slate-200/80 p-12 text-center my-6">
+                <div class="w-16 h-16 bg-slate-100 text-slate-400 rounded-2xl mx-auto flex items-center justify-center mb-4">
+                    <i data-lucide="inbox" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-base font-bold text-slate-800 mb-1">未找到相关资产</h3>
+                <p class="text-xs text-slate-500 mb-5 max-w-sm mx-auto">当前筛选条件下没有任何资产记录，您可以清除搜索词或登记一件新资产。</p>
+                <button @click="openAddModal" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-sm transition">
+                    立即登记新资产
+                </button>
+            </div>
+
+            <!-- 1. GRID VIEW -->
+            <div v-else-if="viewMode === 'grid'" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+                <div v-for="item in assets" :key="item.id"
+                     class="bg-white rounded-xl border border-slate-200/80 hover:border-indigo-300 hover:shadow-md transition-all duration-200 flex flex-col overflow-hidden group">
+                    
+                    <!-- Cover Image -->
+                    <div class="relative h-48 bg-slate-100 overflow-hidden cursor-pointer" @click="openDetail(item.id)">
+                        <img v-if="item.primary_thumb_url" :src="item.primary_thumb_url" :alt="item.name"
+                             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">
+                        <div v-else class="w-full h-full flex flex-col items-center justify-center text-slate-300">
+                            <i data-lucide="image" class="w-10 h-10 mb-1"></i>
+                            <span class="text-xs">无照片</span>
+                        </div>
+
+                        <!-- Image Count Badge -->
+                        <div v-if="item.image_count > 0" class="absolute bottom-2.5 right-2.5 bg-black/60 backdrop-blur-sm text-white text-xs px-2 py-0.5 rounded-full flex items-center space-x-1">
+                            <i data-lucide="camera" class="w-3 h-3"></i>
+                            <span>{{ item.image_count }}</span>
+                        </div>
+
+                        <!-- Status Badge -->
+                        <span :class="{
+                            'bg-emerald-500/90 text-white': item.status === '在用',
+                            'bg-blue-500/90 text-white': item.status === '闲置',
+                            'bg-amber-500/90 text-white': item.status === '维修中',
+                            'bg-slate-500/90 text-white': item.status === '报废' || item.status === '借出',
+                        }" class="absolute top-2.5 right-2.5 text-xs px-2.5 py-0.5 rounded-full font-medium shadow-sm backdrop-blur-sm">
+                            {{ item.status }}
+                        </span>
+
+                        <!-- Asset Category Pill -->
+                        <span class="absolute top-2.5 left-2.5 bg-white/90 backdrop-blur-sm text-slate-700 text-xs px-2 py-0.5 rounded font-medium shadow-sm">
+                            {{ item.category || '通用' }}
+                        </span>
+                    </div>
+
+                    <!-- Card Body -->
+                    <div class="p-4 flex-1 flex flex-col">
+                        <!-- Asset ID & Tag -->
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
+                                {{ item.id }}
+                            </span>
+                            <span class="text-[11px] text-slate-400">
+                                {{ item.created_at ? item.created_at.slice(0, 10) : '' }}
+                            </span>
+                        </div>
+
+                        <!-- Asset Name -->
+                        <h4 @click="openDetail(item.id)"
+                            class="font-semibold text-slate-900 text-sm leading-snug line-clamp-1 hover:text-indigo-600 cursor-pointer mb-2">
+                            {{ item.name }}
+                        </h4>
+
+                        <!-- Location Tag (Highlight requirement) -->
+                        <div class="flex items-center space-x-1.5 text-xs text-slate-600 bg-slate-50 border border-slate-100 p-2 rounded-lg mb-2.5">
+                            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-rose-500 shrink-0"></i>
+                            <span class="font-medium text-slate-700 truncate" :title="item.location">
+                                {{ item.location }}
+                            </span>
+                        </div>
+
+                        <!-- Description preview if any -->
+                        <p v-if="item.description" class="text-xs text-slate-500 line-clamp-2 mb-3 flex-1">
+                            {{ item.description }}
+                        </p>
+                        <div v-else class="flex-1"></div>
+
+                        <!-- Card Action Footer -->
+                        <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                            <button @click="openPrintLabel(item)"
+                                    class="text-slate-500 hover:text-indigo-600 flex items-center space-x-1 py-1">
+                                <i data-lucide="printer" class="w-3.5 h-3.5"></i>
+                                <span>标签码</span>
+                            </button>
+                            <div class="flex items-center space-x-2">
+                                <button @click="openEditModal(item)" class="text-slate-500 hover:text-indigo-600 p-1">
+                                    <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+                                </button>
+                                <button @click="openDetail(item.id)" class="px-2.5 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded font-medium transition">
+                                    查看详情
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. TABLE VIEW -->
+            <div v-else class="bg-white rounded-xl border border-slate-200/80 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-600">
+                        <thead class="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200">
+                            <tr>
+                                <th class="px-4 py-3">图片</th>
+                                <th class="px-4 py-3">资产编号(ID)</th>
+                                <th class="px-4 py-3">资产名称</th>
+                                <th class="px-4 py-3">存放位置(Location)</th>
+                                <th class="px-4 py-3">类别</th>
+                                <th class="px-4 py-3">状态</th>
+                                <th class="px-4 py-3 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr v-for="item in assets" :key="item.id" class="hover:bg-slate-50/80 transition cursor-pointer" @click="openDetail(item.id)">
+                                <td class="px-4 py-2.5" @click.stop>
+                                    <div class="w-12 h-12 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center shrink-0 cursor-pointer"
+                                         @click="item.primary_image_url ? openLightbox(item.primary_image_url) : openDetail(item.id)">
+                                        <img v-if="item.primary_thumb_url" :src="item.primary_thumb_url" class="w-full h-full object-cover">
+                                        <i v-else data-lucide="image" class="w-5 h-5 text-slate-300"></i>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-2.5 font-mono text-xs font-bold text-indigo-600">
+                                    {{ item.id }}
+                                </td>
+                                <td class="px-4 py-2.5 font-medium text-slate-900 max-w-[200px] truncate">
+                                    {{ item.name }}
+                                </td>
+                                <td class="px-4 py-2.5">
+                                    <span class="inline-flex items-center space-x-1 text-xs text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+                                        <i data-lucide="map-pin" class="w-3 h-3 text-rose-500"></i>
+                                        <span>{{ item.location }}</span>
+                                    </span>
+                                </td>
+                                <td class="px-4 py-2.5 text-xs text-slate-500">{{ item.category }}</td>
+                                <td class="px-4 py-2.5">
+                                    <span :class="{
+                                        'bg-emerald-100 text-emerald-800': item.status === '在用',
+                                        'bg-blue-100 text-blue-800': item.status === '闲置',
+                                        'bg-amber-100 text-amber-800': item.status === '维修中',
+                                        'bg-slate-100 text-slate-800': item.status === '报废' || item.status === '借出',
+                                    }" class="text-xs px-2 py-0.5 rounded-full font-medium">
+                                        {{ item.status }}
+                                    </span>
+                                </td>
+                                <td class="px-4 py-2.5 text-right space-x-2" @click.stop>
+                                    <button @click="openPrintLabel(item)" title="打印标签码" class="text-slate-400 hover:text-indigo-600 p-1">
+                                        <i data-lucide="printer" class="w-4 h-4"></i>
+                                    </button>
+                                    <button @click="openEditModal(item)" title="编辑" class="text-slate-400 hover:text-indigo-600 p-1">
+                                        <i data-lucide="edit-3" class="w-4 h-4"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Pagination -->
+            <div v-if="totalPages > 1" class="flex items-center justify-between py-3 border-t border-slate-200 text-xs text-slate-500">
+                <div>共 {{ totalAssets }} 件资产，当前第 {{ currentPage }} / {{ totalPages }} 页</div>
+                <div class="flex items-center space-x-2">
+                    <button :disabled="currentPage <= 1" @click="loadAssets(currentPage - 1)"
+                            class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-40">
+                        上一页
+                    </button>
+                    <button :disabled="currentPage >= totalPages" @click="loadAssets(currentPage + 1)"
+                            class="px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-40">
+                        下一页
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- ============================================================== -->
+    <!-- MODAL: ADD / EDIT ASSET                                        -->
+    <!-- ============================================================== -->
+    <div v-if="showAssetModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-2xl w-full my-8 overflow-hidden flex flex-col max-h-[90vh]">
+            
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <h3 class="font-bold text-slate-900 text-base">
+                    {{ isEditing ? '编辑资产信息' : '登记新资产' }}
+                </h3>
+                <button @click="showAssetModal = false" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto flex-1 space-y-4 text-sm">
+                
+                <!-- Asset ID & Generate Button & AI Auto-Recognition -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                            资产编号 (Asset ID) <span class="text-red-500">*</span>
+                        </label>
+                        <span v-if="isRecognizingId" class="text-xs text-indigo-600 font-medium flex items-center space-x-1 animate-pulse">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                            <span>AI 正在识别照片编号...</span>
+                        </span>
+                    </div>
+                    
+                    <div class="flex space-x-2">
+                        <input v-model="assetForm.id" :disabled="isEditing" type="text" placeholder="例如 PU.023 / AST-001 / 条形码"
+                               class="flex-1 px-3.5 py-2 rounded-lg border border-slate-300 font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none disabled:bg-slate-100">
+                        <button v-if="!isEditing && pendingImages.length > 0" @click="triggerManualRecognize()" :disabled="isRecognizingId" type="button"
+                                class="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-medium rounded-lg transition shrink-0 flex items-center space-x-1 border border-indigo-200/60">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                            <span>识图取号</span>
+                        </button>
+                        <button v-if="!isEditing" @click="generateAssetId" type="button"
+                                class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg transition shrink-0">
+                            自动生成
+                        </button>
+                    </div>
+
+                    <!-- AI ID Candidates Chips -->
+                    <div v-if="idCandidates.length > 0" class="flex flex-wrap items-center gap-1.5 pt-2">
+                        <span class="text-[11px] text-slate-400 font-medium flex items-center">
+                            <i data-lucide="sparkles" class="w-3 h-3 text-indigo-500 mr-1"></i> 识别候选:
+                        </span>
+                        <button v-for="cand in idCandidates" :key="cand" type="button"
+                                @click="assetForm.id = cand"
+                                :class="[assetForm.id === cand ? 'bg-indigo-600 text-white font-bold shadow-sm' : 'bg-slate-100 hover:bg-indigo-50 text-slate-700 border border-slate-200']"
+                                class="px-2 py-0.5 rounded text-xs transition font-mono">
+                            {{ cand }}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Asset Name -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        资产名称 <span class="text-red-500">*</span>
+                    </label>
+                    <input v-model="assetForm.name" type="text" placeholder="例如 戴尔 27寸 4K 显示器 / 博世电钻"
+                           class="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+                </div>
+
+                <!-- Location with Quick Pick Chips -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        存放/所在位置 (Location) <span class="text-red-500">*</span>
+                    </label>
+                    <input v-model="assetForm.location" type="text" placeholder="例如 A区仓库-02货架 / 研发部301工位"
+                           class="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none mb-1.5">
+                    
+                    <!-- Location suggestion chips -->
+                    <div v-if="locationsList.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+                        <span class="text-[11px] text-slate-400 self-center">常用位置:</span>
+                        <button v-for="l in locationsList.slice(0, 6)" :key="l.location" type="button"
+                                @click="setFormLocation(l.location)"
+                                class="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded text-xs transition">
+                            {{ l.location }}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Category & Status -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">资产类别</label>
+                        <select v-model="assetForm.category" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white outline-none">
+                            <option value="通用">通用</option>
+                            <option value="电子数码">电子数码</option>
+                            <option value="办公家具">办公家具</option>
+                            <option value="仪器设备">仪器设备</option>
+                            <option value="工具耗材">工具耗材</option>
+                            <option value="生活家电">生活家电</option>
+                            <option value="其他">其他</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">当前状态</label>
+                        <select v-model="assetForm.status" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white outline-none">
+                            <option value="在用">在用 (In Use)</option>
+                            <option value="闲置">闲置 (Available)</option>
+                            <option value="维修中">维修中 (Maintenance)</option>
+                            <option value="借出">借出 (Borrowed)</option>
+                            <option value="报废">报废 (Scrapped)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Description / Remarks -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">规格型号 / 备注说明</label>
+                    <textarea v-model="assetForm.description" rows="2" placeholder="填写序列号、购买信息或具体规格..."
+                              class="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"></textarea>
+                </div>
+
+                <!-- Image Upload Zone (Only when creating, or edit via detail view) -->
+                <div v-if="!isEditing">
+                    <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                        资产对应照片 (可上传多张或拍照)
+                    </label>
+
+                    <div @dragover.prevent @drop.prevent="handleDrop"
+                         class="border-2 border-dashed border-slate-300 hover:border-indigo-400 rounded-xl p-5 text-center transition bg-slate-50/50">
+                        <i data-lucide="cloud-upload" class="w-8 h-8 text-slate-400 mx-auto mb-2"></i>
+                        <p class="text-xs text-slate-600 mb-2">拖拽图片到此处，或按 <kbd class="px-1.5 py-0.5 bg-slate-200 rounded text-[10px]">Ctrl+V</kbd> 粘贴截图</p>
+                        
+                        <div class="flex items-center justify-center space-x-2">
+                            <!-- Direct Mobile Camera Capture -->
+                            <label class="cursor-pointer px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-xs font-medium inline-flex items-center space-x-1.5 transition">
+                                <i data-lucide="camera" class="w-3.5 h-3.5"></i>
+                                <span>手机拍照</span>
+                                <input type="file" accept="image/*" capture="environment" class="hidden" @change="handleFilesSelected">
+                            </label>
+
+                            <!-- File Browser -->
+                            <label class="cursor-pointer px-3 py-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-medium inline-flex items-center space-x-1.5 transition">
+                                <i data-lucide="folder" class="w-3.5 h-3.5"></i>
+                                <span>选择相册文件</span>
+                                <input type="file" accept="image/*" multiple class="hidden" @change="handleFilesSelected">
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Pending Images Previews -->
+                    <div v-if="pendingImages.length > 0" class="grid grid-cols-3 sm:grid-cols-4 gap-2.5 mt-3">
+                        <div v-for="(p, idx) in pendingImages" :key="idx" class="relative group h-20 rounded-lg overflow-hidden border border-slate-200 bg-slate-100">
+                            <img :src="p.previewUrl" class="w-full h-full object-cover">
+                            <div class="absolute top-1 right-1 flex space-x-1">
+                                <button @click="triggerManualRecognize(p.file)" type="button" title="识别此图上的编号或条码"
+                                        class="bg-indigo-600/90 text-white rounded-full p-1 opacity-90 hover:opacity-100 shadow transition">
+                                    <i data-lucide="sparkles" class="w-3 h-3"></i>
+                                </button>
+                                <button @click="removePendingImage(idx)" type="button" title="移除"
+                                        class="bg-red-600/90 text-white rounded-full p-1 opacity-90 hover:opacity-100 shadow transition">
+                                    <i data-lucide="x" class="w-3 h-3"></i>
+                                </button>
+                            </div>
+                            <span v-if="idx === 0" class="absolute bottom-1 left-1 bg-indigo-600 text-white text-[10px] px-1 rounded font-medium">首图</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-end space-x-3 bg-slate-50/50">
+                <button @click="showAssetModal = false" type="button" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition text-sm">
+                    取消
+                </button>
+                <button @click="saveAsset" :disabled="isSavingAsset" type="button"
+                        class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg shadow-sm text-sm transition flex items-center space-x-1.5 disabled:opacity-50">
+                    <span v-if="isSavingAsset" class="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white"></span>
+                    <span>{{ isSavingAsset ? '保存中...' : (isEditing ? '保存修改' : '确认登记') }}</span>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL: ASSET DETAIL VIEW & IMAGE GALLERY                       -->
+    <!-- ============================================================== -->
+    <div v-if="showDetailModal && activeAsset" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-3xl w-full my-6 overflow-hidden flex flex-col max-h-[92vh]">
+            
+            <!-- Header -->
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div class="flex items-center space-x-2">
+                    <span class="font-mono text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
+                        {{ activeAsset.id }}
+                    </span>
+                    <h3 class="font-bold text-slate-900 text-base truncate max-w-sm sm:max-w-md">{{ activeAsset.name }}</h3>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button @click="openPrintLabel(activeAsset)" title="打印资产标签二维码" class="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition">
+                        <i data-lucide="printer" class="w-4 h-4"></i>
+                    </button>
+                    <button @click="openEditModal(activeAsset); showDetailModal = false" title="编辑信息" class="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition">
+                        <i data-lucide="edit-3" class="w-4 h-4"></i>
+                    </button>
+                    <button @click="showDetailModal = false" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Body -->
+            <div class="p-6 overflow-y-auto flex-1 space-y-6 text-sm">
+                
+                <!-- Image Gallery -->
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
+                            <i data-lucide="camera" class="w-3.5 h-3.5 text-indigo-600"></i>
+                            <span>资产图片库 ({{ activeAsset.images?.length || 0 }} 张)</span>
+                        </label>
+
+                        <!-- Add Photos Button -->
+                        <div class="flex space-x-2">
+                            <label class="cursor-pointer px-2.5 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded text-xs font-medium flex items-center space-x-1 transition">
+                                <i data-lucide="camera" class="w-3 h-3"></i>
+                                <span>手机拍照追加</span>
+                                <input type="file" accept="image/*" capture="environment" class="hidden" @change="handleUploadMoreImages">
+                            </label>
+                            <label class="cursor-pointer px-2.5 py-1 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded text-xs font-medium flex items-center space-x-1 transition">
+                                <i data-lucide="plus" class="w-3 h-3"></i>
+                                <span>选择相册追加</span>
+                                <input type="file" accept="image/*" multiple class="hidden" @change="handleUploadMoreImages">
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Main Image Display -->
+                    <div v-if="activeAsset.images && activeAsset.images.length > 0" class="space-y-3">
+                        <div class="relative h-72 sm:h-96 bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center group">
+                            <img :src="activeAsset.images[activeImageIndex]?.url"
+                                 class="max-h-full max-w-full object-contain cursor-zoom-in"
+                                 @click="openLightbox(activeAsset.images[activeImageIndex]?.url)">
+                            
+                            <!-- Expand Lightbox Icon -->
+                            <button @click="openLightbox(activeAsset.images[activeImageIndex]?.url)"
+                                    class="absolute top-3 right-3 p-2 bg-black/50 hover:bg-black/80 text-white rounded-lg backdrop-blur-sm transition">
+                                <i data-lucide="maximize-2" class="w-4 h-4"></i>
+                            </button>
+
+                            <!-- Primary Badge -->
+                            <span v-if="activeAsset.images[activeImageIndex]?.is_primary"
+                                  class="absolute top-3 left-3 bg-indigo-600 text-white text-xs px-2.5 py-1 rounded-full font-medium shadow">
+                                主封面图
+                            </span>
+
+                            <!-- Action Bar overlay on active image -->
+                            <div class="absolute bottom-3 right-3 flex items-center space-x-2 opacity-90 group-hover:opacity-100 transition">
+                                <button v-if="!activeAsset.images[activeImageIndex]?.is_primary"
+                                        @click="handleSetPrimaryImage(activeAsset.images[activeImageIndex]?.id)"
+                                        class="px-2.5 py-1 bg-white/90 hover:bg-white text-slate-800 text-xs font-medium rounded-lg shadow transition">
+                                    设为主图
+                                </button>
+                                <button @click="handleDeleteImage(activeAsset.images[activeImageIndex]?.id)"
+                                        class="px-2.5 py-1 bg-red-600/90 hover:bg-red-600 text-white text-xs font-medium rounded-lg shadow transition flex items-center space-x-1">
+                                    <i data-lucide="trash-2" class="w-3 h-3"></i>
+                                    <span>删除图片</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Thumbnails Row -->
+                        <div v-if="activeAsset.images.length > 1" class="flex items-center space-x-2 overflow-x-auto pb-2 pt-1 no-scrollbar">
+                            <div v-for="(img, idx) in activeAsset.images" :key="img.id"
+                                 @click="activeImageIndex = idx"
+                                 :class="[activeImageIndex === idx ? 'ring-2 ring-indigo-600' : 'opacity-70 hover:opacity-100']"
+                                 class="w-16 h-16 rounded-lg overflow-hidden shrink-0 cursor-pointer border border-slate-200 transition bg-slate-100">
+                                <img :src="img.thumb_url" class="w-full h-full object-cover">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- No Images Alert -->
+                    <div v-else class="h-44 bg-slate-50 border border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center text-slate-400">
+                        <i data-lucide="camera-off" class="w-8 h-8 mb-1"></i>
+                        <span class="text-xs">暂未上传图片</span>
+                    </div>
+                </div>
+
+                <!-- Asset Attributes Grid -->
+                <div class="bg-slate-50/70 border border-slate-200/80 rounded-xl p-4.5 space-y-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <!-- Location Highlight -->
+                        <div class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
+                            <div class="text-xs text-slate-400 font-medium mb-1">存放/所在位置 (Location)</div>
+                            <div class="text-slate-900 font-semibold flex items-center space-x-1.5">
+                                <i data-lucide="map-pin" class="w-4 h-4 text-rose-500"></i>
+                                <span>{{ activeAsset.location }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Status Highlight -->
+                        <div class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
+                            <div class="text-xs text-slate-400 font-medium mb-1">当前状态</div>
+                            <div class="text-slate-900 font-semibold flex items-center space-x-1.5">
+                                <span :class="{
+                                    'bg-emerald-500': activeAsset.status === '在用',
+                                    'bg-blue-500': activeAsset.status === '闲置',
+                                    'bg-amber-500': activeAsset.status === '维修中',
+                                    'bg-slate-500': activeAsset.status === '报废' || activeAsset.status === '借出',
+                                }" class="w-2.5 h-2.5 rounded-full inline-block"></span>
+                                <span>{{ activeAsset.status }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Category -->
+                        <div class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
+                            <div class="text-xs text-slate-400 font-medium mb-1">资产类别</div>
+                            <div class="text-slate-800 font-medium">{{ activeAsset.category }}</div>
+                        </div>
+
+                        <!-- Timestamps -->
+                        <div class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
+                            <div class="text-xs text-slate-400 font-medium mb-1">登记时间</div>
+                            <div class="text-slate-800 font-mono text-xs">{{ activeAsset.created_at ? activeAsset.created_at.slice(0, 19).replace('T', ' ') : '-' }}</div>
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <div v-if="activeAsset.description" class="bg-white p-3 rounded-lg border border-slate-200/70 shadow-sm">
+                        <div class="text-xs text-slate-400 font-medium mb-1">规格型号 / 备注</div>
+                        <div class="text-slate-700 whitespace-pre-wrap text-xs leading-relaxed">{{ activeAsset.description }}</div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Footer with Delete Asset Button -->
+            <div class="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <button @click="handleDeleteAsset(activeAsset.id)"
+                        class="text-red-600 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center space-x-1">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    <span>删除资产</span>
+                </button>
+                <button @click="showDetailModal = false" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-medium transition">
+                    关闭
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL: PRINTABLE ASSET LABEL & QR CODE                         -->
+    <!-- ============================================================== -->
+    <div v-if="showLabelModal && labelAsset" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full p-6 text-center">
+            
+            <div class="flex items-center justify-between mb-4 no-print">
+                <h3 class="font-bold text-slate-900 text-base">打印资产标签</h3>
+                <button @click="showLabelModal = false" class="text-slate-400 hover:text-slate-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Printable Card Area (Formatted for thermal label printer or standard paper) -->
+            <div id="printable-tag-area" class="border-2 border-slate-900 rounded-xl p-4 bg-white text-left max-w-sm mx-auto shadow-sm my-3">
+                <div class="flex items-center justify-between border-b-2 border-slate-900 pb-2 mb-3">
+                    <span class="font-bold text-xs uppercase tracking-wider text-slate-900">ASSET TAG 资产标签</span>
+                    <span class="font-mono font-bold text-xs bg-slate-900 text-white px-2 py-0.5 rounded">{{ labelAsset.id }}</span>
+                </div>
+
+                <div class="flex items-center space-x-3.5">
+                    <div id="label-qrcode" class="shrink-0 bg-white p-1 border border-slate-200 rounded"></div>
+                    <div class="space-y-1.5 min-w-0 flex-1 text-xs">
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">资产名称</div>
+                            <div class="font-bold text-slate-900 text-sm truncate">{{ labelAsset.name }}</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">存放位置 (Location)</div>
+                            <div class="font-semibold text-slate-800 text-xs truncate">{{ labelAsset.location }}</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-500 uppercase">类别 / 状态</div>
+                            <div class="text-slate-600 text-xs">{{ labelAsset.category }} · {{ labelAsset.status }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-end space-x-2.5 mt-5 no-print">
+                <button @click="showLabelModal = false" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm transition">
+                    关闭
+                </button>
+                <button @click="triggerPrint" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg shadow text-sm transition flex items-center space-x-1.5">
+                    <i data-lucide="printer" class="w-4 h-4"></i>
+                    <span>立即打印标签</span>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL: CAMERA QR / BARCODE SCANNER                             -->
+    <!-- ============================================================== -->
+    <div v-if="showScannerModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full p-5 text-center">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="font-bold text-slate-900 text-base flex items-center space-x-2">
+                    <i data-lucide="scan" class="w-5 h-5 text-indigo-600"></i>
+                    <span>扫描或识别资产标签</span>
+                </h3>
+                <button @click="stopScanner" class="text-slate-400 hover:text-slate-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <p class="text-xs text-slate-500 mb-3">可对准资产标签二维码/条码实时扫描，或上传照片由 AI 识别编号</p>
+            
+            <div id="interactive-qr-scanner" class="w-full rounded-xl overflow-hidden bg-black min-h-[240px]"></div>
+
+            <!-- Upload Photo Recognition in Scanner -->
+            <div class="mt-3.5 flex items-center justify-center">
+                <label class="cursor-pointer w-full py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-medium inline-flex items-center justify-center space-x-1.5 transition border border-indigo-200/80">
+                    <i data-lucide="image" class="w-4 h-4"></i>
+                    <span>从手机相册选图识别 (OCR / 条码)</span>
+                    <input type="file" accept="image/*" class="hidden" @change="handleScannerFileUpload">
+                </label>
+            </div>
+
+            <button @click="stopScanner" class="mt-3 w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                取消
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- MODAL: USER & PASSKEY SECURITY SETTINGS                        -->
+    <!-- ============================================================== -->
+    <div v-if="showUserModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-lg w-full p-6 text-left">
+            
+            <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                <h3 class="font-bold text-slate-900 text-base flex items-center space-x-2">
+                    <i data-lucide="key-round" class="w-5 h-5 text-indigo-600"></i>
+                    <span>Passkey 安全凭据与设备管理</span>
+                </h3>
+                <button @click="showUserModal = false" class="text-slate-400 hover:text-slate-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="space-y-4 text-sm">
+                <div class="p-3 bg-slate-50 rounded-xl border border-slate-200/70 flex items-center justify-between">
+                    <div>
+                        <div class="text-xs text-slate-500">当前登录用户</div>
+                        <div class="font-bold text-slate-900">{{ authStatus.user?.display_name }} ({{ authStatus.user?.username }})</div>
+                    </div>
+                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2.5 py-0.5 rounded-full font-medium">管理员</span>
+                </div>
+
+                <!-- Add Backup Passkey Device -->
+                <div class="border border-indigo-100 bg-indigo-50/40 rounded-xl p-4">
+                    <h4 class="font-semibold text-slate-900 text-xs uppercase tracking-wider mb-2">绑定新设备 / 备用 Passkey</h4>
+                    <p class="text-xs text-slate-500 mb-3">为您的手机、备用笔记本或 YubiKey 注册新凭据，防止单一设备损坏无法登录。</p>
+                    <div class="flex space-x-2">
+                        <input v-model="newDeviceName" type="text" placeholder="例如 iPhone 15 Pro / 办公台式机"
+                               class="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none bg-white">
+                        <button @click="handleAddPasskey" :disabled="isAddingPasskey"
+                                class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs rounded-lg shadow-sm transition disabled:opacity-50 shrink-0 flex items-center space-x-1">
+                            <span v-if="isAddingPasskey" class="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></span>
+                            <span>{{ isAddingPasskey ? '验证中...' : '绑定当前设备' }}</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Passkeys List -->
+                <div>
+                    <h4 class="font-semibold text-slate-900 text-xs uppercase tracking-wider mb-2">已绑定的 Passkey 设备 ({{ userPasskeys.length }})</h4>
+                    <div class="space-y-2 max-h-48 overflow-y-auto">
+                        <div v-for="pk in userPasskeys" :key="pk.id"
+                             class="flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-white">
+                            <div class="flex items-center space-x-2.5">
+                                <i data-lucide="shield-check" class="w-4 h-4 text-emerald-600 shrink-0"></i>
+                                <div>
+                                    <div class="font-medium text-slate-800 text-xs">{{ pk.device_name || '安全密钥凭据' }}</div>
+                                    <div class="text-[10px] text-slate-400">上次使用: {{ pk.last_used_at ? pk.last_used_at.slice(0, 10) : '未记录' }}</div>
+                                </div>
+                            </div>
+                            <button @click="handleDeletePasskey(pk.id)" title="移除此凭据" class="text-slate-400 hover:text-red-600 p-1">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-5 pt-3 border-t border-slate-100 flex justify-end">
+                <button @click="showUserModal = false" class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition">
+                    完成
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- FULLSCREEN LIGHTBOX                                            -->
+    <!-- ============================================================== -->
+    <div v-if="showLightbox" @click="showLightbox = false"
+         class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out">
+        <button @click="showLightbox = false" class="absolute top-5 right-5 text-white/80 hover:text-white p-2">
+            <i data-lucide="x" class="w-6 h-6"></i>
+        </button>
+        <img :src="lightboxImageUrl" class="max-h-[92vh] max-w-[92vw] object-contain rounded shadow-2xl">
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- FLOATING TOAST NOTIFICATION                                    -->
+    <!-- ============================================================== -->
+    <transition name="fade">
+        <div v-if="toast.show"
+             :class="[toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-slate-900 text-white']"
+             class="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl shadow-xl text-xs sm:text-sm font-medium flex items-center space-x-2">
+            <i v-if="toast.type === 'error'" data-lucide="alert-circle" class="w-4 h-4"></i>
+            <i v-else data-lucide="check-circle" class="w-4 h-4 text-emerald-400"></i>
+            <span>{{ toast.message }}</span>
+        </div>
+    </transition>
+
+</div>
+
+<!-- Application Entrypoints -->
+<script src="/static/js/webauthn.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
+
