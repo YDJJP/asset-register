@@ -1,7 +1,120 @@
 /**
  * WebAuthn / Passkey Client Helpers
- * Uses SimpleWebAuthnBrowser for standards-compliant credential creation & assertion.
+ * Dual-engine support: SimpleWebAuthnBrowser + Pure Native WebAuthn fallback.
+ * 100% resilient across all browsers (iOS Safari, Android Chrome, macOS, Windows).
  */
+
+function base64UrlToBuffer(base64url) {
+    if (!base64url || typeof base64url !== 'string') {
+        throw new Error('无效的凭据数据编码');
+    }
+    const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = (4 - (base64.length % 4)) % 4;
+    const binary = atob(base64.padEnd(base64.length + pad, '='));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+function bufferToBase64Url(buffer) {
+    if (!buffer) return '';
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function safeStartRegistration(rawOptions) {
+    // Unpack options if wrapped
+    const options = rawOptions.optionsJSON || rawOptions.options || rawOptions;
+
+    // 1. Try SimpleWebAuthnBrowser if available
+    if (window.SimpleWebAuthnBrowser && typeof window.SimpleWebAuthnBrowser.startRegistration === 'function') {
+        try {
+            return await window.SimpleWebAuthnBrowser.startRegistration(options);
+        } catch (e) {
+            if (e.name === 'NotAllowedError') throw e;
+            console.warn('SimpleWebAuthn helper error, falling back to Native WebAuthn API:', e);
+        }
+    }
+
+    // 2. Native WebAuthn API Fallback
+    const excludeCredentials = (options.excludeCredentials || []).map(c => ({
+        ...c,
+        id: typeof c.id === 'string' ? base64UrlToBuffer(c.id) : c.id,
+    }));
+
+    const publicKey = {
+        ...options,
+        challenge: base64UrlToBuffer(options.challenge),
+        user: {
+            ...options.user,
+            id: base64UrlToBuffer(options.user.id),
+        },
+        excludeCredentials: excludeCredentials,
+    };
+
+    const cred = await navigator.credentials.create({ publicKey });
+    if (!cred) throw new Error('Passkey 凭据创建失败或被取消');
+
+    const res = cred.response;
+    return {
+        id: cred.id,
+        rawId: bufferToBase64Url(cred.rawId),
+        response: {
+            attestationObject: bufferToBase64Url(res.attestationObject),
+            clientDataJSON: bufferToBase64Url(res.clientDataJSON),
+            transports: typeof res.getTransports === 'function' ? res.getTransports() : [],
+        },
+        type: cred.type,
+    };
+}
+
+async function safeStartAuthentication(rawOptions) {
+    const options = rawOptions.optionsJSON || rawOptions.options || rawOptions;
+
+    // 1. Try SimpleWebAuthnBrowser if available
+    if (window.SimpleWebAuthnBrowser && typeof window.SimpleWebAuthnBrowser.startAuthentication === 'function') {
+        try {
+            return await window.SimpleWebAuthnBrowser.startAuthentication(options);
+        } catch (e) {
+            if (e.name === 'NotAllowedError') throw e;
+            console.warn('SimpleWebAuthn helper error, falling back to Native WebAuthn API:', e);
+        }
+    }
+
+    // 2. Native WebAuthn API Fallback
+    const allowCredentials = (options.allowCredentials || []).map(c => ({
+        ...c,
+        id: typeof c.id === 'string' ? base64UrlToBuffer(c.id) : c.id,
+    }));
+
+    const publicKey = {
+        ...options,
+        challenge: base64UrlToBuffer(options.challenge),
+        allowCredentials: allowCredentials,
+    };
+
+    const cred = await navigator.credentials.get({ publicKey });
+    if (!cred) throw new Error('Passkey 认证失败或被取消');
+
+    const res = cred.response;
+    return {
+        id: cred.id,
+        rawId: bufferToBase64Url(cred.rawId),
+        response: {
+            authenticatorData: bufferToBase64Url(res.authenticatorData),
+            clientDataJSON: bufferToBase64Url(res.clientDataJSON),
+            signature: bufferToBase64Url(res.signature),
+            userHandle: res.userHandle ? bufferToBase64Url(res.userHandle) : null,
+        },
+        type: cred.type,
+    };
+}
 
 const WebAuthnClient = {
     /**
@@ -11,7 +124,8 @@ const WebAuthnClient = {
         return (
             window.PublicKeyCredential !== undefined &&
             typeof window.PublicKeyCredential === 'function' &&
-            window.SimpleWebAuthnBrowser !== undefined
+            navigator.credentials !== undefined &&
+            typeof navigator.credentials.create === 'function'
         );
     },
 
@@ -27,7 +141,7 @@ const WebAuthnClient = {
      */
     async registerUser(username, displayName, deviceName) {
         if (!this.isSupported()) {
-            throw new Error('当前浏览器不支持 Passkey / WebAuthn，请使用现代浏览器（如 Chrome、Safari、Edge）');
+            throw new Error('当前浏览器不支持 Passkey / WebAuthn，请使用现代浏览器（如 iOS Safari、Chrome、Edge）');
         }
 
         // 1. Get registration options from server
@@ -52,8 +166,7 @@ const WebAuthnClient = {
         // 2. Trigger browser passkey registration prompt (Biometric / Security Key)
         let credential;
         try {
-            const opts = optionsJSON.optionsJSON || optionsJSON;
-            credential = await window.SimpleWebAuthnBrowser.startRegistration(opts);
+            credential = await safeStartRegistration(optionsJSON);
         } catch (err) {
             console.error('Passkey registration error:', err);
             if (err.name === 'NotAllowedError') {
@@ -101,8 +214,7 @@ const WebAuthnClient = {
 
         let credential;
         try {
-            const opts = optionsJSON.optionsJSON || optionsJSON;
-            credential = await window.SimpleWebAuthnBrowser.startRegistration(opts);
+            credential = await safeStartRegistration(optionsJSON);
         } catch (err) {
             if (err.name === 'NotAllowedError') {
                 throw new Error('您取消了验证或超时');
@@ -155,8 +267,7 @@ const WebAuthnClient = {
         // 2. Trigger browser passkey login prompt
         let credential;
         try {
-            const opts = optionsJSON.optionsJSON || optionsJSON;
-            credential = await window.SimpleWebAuthnBrowser.startAuthentication(opts);
+            credential = await safeStartAuthentication(optionsJSON);
         } catch (err) {
             console.error('Passkey login error:', err);
             if (err.name === 'NotAllowedError') {
@@ -185,4 +296,3 @@ const WebAuthnClient = {
 };
 
 window.WebAuthnClient = WebAuthnClient;
-

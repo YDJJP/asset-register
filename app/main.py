@@ -33,6 +33,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Prevent aggressive CDN (Cloudflare) / mobile browser caching of static scripts & HTML
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith(".html") or path.endswith(".js") or path.endswith(".css"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Include API Routers
 app.include_router(auth_router.router)
 app.include_router(user_router.router)
@@ -53,7 +64,13 @@ def health_check():
 @app.get("/")
 def serve_index():
     index_file = STATIC_DIR / "index.html"
-    return FileResponse(str(index_file))
+    return FileResponse(
+        str(index_file),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 # Fallback for SPA routing
 @app.exception_handler(404)
