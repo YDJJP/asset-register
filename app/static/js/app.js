@@ -66,6 +66,25 @@ const app = createApp({
         const isRecognizingId = ref(false);
         const idCandidates = ref([]);
 
+        // Name Candidates: ID + other recognized OCR / Barcode text candidates
+        const nameCandidates = computed(() => {
+            const list = [];
+            const currentId = (assetForm.value.id || '').trim();
+            // Include non-generic ID as primary candidate
+            if (currentId && !currentId.startsWith('AST-')) {
+                list.push(currentId);
+            }
+            for (let c of idCandidates.value) {
+                if (c && !list.includes(c)) {
+                    list.push(c);
+                }
+            }
+            if (list.length === 0 && currentId) {
+                list.push(currentId);
+            }
+            return list;
+        });
+
         // Asset Detail View
         const showDetailModal = ref(false);
         const activeAsset = ref(null);
@@ -462,6 +481,10 @@ const app = createApp({
                     if (data.best_id) {
                         assetForm.value.id = data.best_id;
                         idCandidates.value = data.candidates || [];
+                        // Default asset name to recognized ID if currently blank
+                        if (!assetForm.value.name.trim()) {
+                            assetForm.value.name = data.best_id;
+                        }
                         showToast(`✨ 已智能识别编号: ${data.best_id}`);
                     } else {
                         showToast('未在图片中检测到明显的资产编号或条码', 'info');
@@ -895,6 +918,7 @@ const app = createApp({
             saveAsset,
             isRecognizingId,
             idCandidates,
+            nameCandidates,
             recognizeIdFromFile,
             triggerManualRecognize,
             handleScannerFileUpload,
