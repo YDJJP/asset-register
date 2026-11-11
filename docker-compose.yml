@@ -13,6 +13,8 @@ services:
     volumes:
       # 持久化存储 SQLite 数据库与上传的资产图片
       - ./data:/app/data
+      # 映射应用程序代码，便于随时 git pull 即时生效
+      - ./app:/app/app
     environment:
       - DATA_DIR=/app/data
       - RP_NAME=Asset Register 资产登记
