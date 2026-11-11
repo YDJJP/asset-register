@@ -33,8 +33,8 @@ def process_and_save_image(file_bytes: bytes, original_filename: str) -> tuple[s
     """
     Processes image with Pillow:
     - Auto-corrects EXIF orientation (critical for smartphone photos)
-    - Saves high-res web version (max 2000px, quality 85)
-    - Generates thumbnail (max 400px, quality 80)
+    - Compresses to 1080p (max 1920x1920 bounding box, quality 82, progressive, optimized)
+    - Generates thumbnail (max 400x400, quality 80)
     Returns: (saved_filename, thumb_filename, file_size, mime_type)
     """
     image_id = uuid.uuid4().hex
@@ -55,15 +55,15 @@ def process_and_save_image(file_bytes: bytes, original_filename: str) -> tuple[s
             elif img.mode != "RGB":
                 img = img.convert("RGB")
 
-            # High-res version (downscale if larger than 2400x2400)
+            # 1080p version (downscale to max 1920 on longest edge, preserving aspect ratio)
             img_full = img.copy()
-            img_full.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
-            img_full.save(full_path, format="JPEG", quality=88, optimize=True)
+            img_full.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
+            img_full.save(full_path, format="JPEG", quality=82, optimize=True, progressive=True)
 
             # Thumbnail
             img_thumb = img.copy()
-            img_thumb.thumbnail((450, 450), Image.Resampling.LANCZOS)
-            img_thumb.save(thumb_path, format="JPEG", quality=82, optimize=True)
+            img_thumb.thumbnail((400, 400), Image.Resampling.LANCZOS)
+            img_thumb.save(thumb_path, format="JPEG", quality=80, optimize=True)
 
         file_size = os.path.getsize(full_path)
         return saved_filename, thumb_filename, file_size, "image/jpeg"

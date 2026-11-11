@@ -106,6 +106,9 @@ def recognize_asset_id_from_image(image_bytes: bytes) -> Dict[str, Any]:
     try:
         pil_img = Image.open(io.BytesIO(image_bytes))
         pil_img = ImageOps.exif_transpose(pil_img)
+        # Downscale to 1080p (max 1920) if larger, speeding up OCR and barcode detection
+        if pil_img.width > 1920 or pil_img.height > 1920:
+            pil_img.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
     except Exception as e:
         return {
             "success": False,

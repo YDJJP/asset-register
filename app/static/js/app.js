@@ -327,19 +327,111 @@ const app = createApp({
             refreshIcons();
         };
 
+        // Client-side image compression: 1080p target (max dimension 1920px, JPEG quality ~0.82)
+        const compressImageTo1080p = async (file, maxDimension = 1920, quality = 0.82) => {
+            if (!file || !file.type || !file.type.startsWith('image/')) return file;
+            if (file.type === 'image/svg+xml' || file.type === 'image/gif') return file;
+
+            const drawAndBlob = (source, origWidth, origHeight) => {
+                let width = origWidth;
+                let height = origHeight;
+
+                // If already within 1080p and smaller than 400KB JPEG, keep as is
+                if (width <= maxDimension && height <= maxDimension && file.size < 400 * 1024 && file.type === 'image/jpeg') {
+                    return Promise.resolve(file);
+                }
+
+                if (width > maxDimension || height > maxDimension) {
+                    if (width >= height) {
+                        height = Math.round((height * maxDimension) / width);
+                        width = maxDimension;
+                    } else {
+                        width = Math.round((width * maxDimension) / height);
+                        height = maxDimension;
+                    }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(source, 0, 0, width, height);
+
+                return new Promise((resolve) => {
+                    canvas.toBlob(
+                        (blob) => {
+                            if (!blob) {
+                                resolve(file);
+                                return;
+                            }
+                            const baseName = (file.name || 'photo').replace(/\.[^/.]+$/, "");
+                            const compressedFile = new File([blob], `${baseName}.jpg`, {
+                                type: 'image/jpeg',
+                                lastModified: Date.now(),
+                            });
+                            console.log(`[1080p Compress] ${file.name} (${(file.size/1024).toFixed(1)}KB) -> ${(compressedFile.size/1024).toFixed(1)}KB [${width}x${height}]`);
+                            resolve(compressedFile);
+                        },
+                        'image/jpeg',
+                        quality
+                    );
+                });
+            };
+
+            if (window.createImageBitmap) {
+                try {
+                    let bitmap;
+                    try {
+                        bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+                    } catch (_) {
+                        bitmap = await createImageBitmap(file);
+                    }
+                    const res = await drawAndBlob(bitmap, bitmap.width, bitmap.height);
+                    if (bitmap && bitmap.close) bitmap.close();
+                    return res;
+                } catch (e) {
+                    console.warn('createImageBitmap fallback to FileReader:', e);
+                }
+            }
+
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        drawAndBlob(img, img.width, img.height).then(resolve);
+                    };
+                    img.onerror = () => resolve(file);
+                    img.src = e.target.result;
+                };
+                reader.onerror = () => resolve(file);
+                reader.readAsDataURL(file);
+            });
+        };
+
+        const formatFileSize = (bytes) => {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        };
+
+        const isCompressingImages = ref(false);
+
         // File / Camera Selection for New Asset
-        const handleFilesSelected = (event) => {
+        const handleFilesSelected = async (event) => {
             const files = Array.from(event.target.files || []);
-            addFilesToPending(files);
             event.target.value = '';
+            await addFilesToPending(files);
         };
 
-        const handleDrop = (event) => {
+        const handleDrop = async (event) => {
             const files = Array.from(event.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
-            addFilesToPending(files);
+            await addFilesToPending(files);
         };
 
-        const handlePaste = (event) => {
+        const handlePaste = async (event) => {
             const items = (event.clipboardData || event.originalEvent.clipboardData).items;
             const pastedFiles = [];
             for (let item of items) {
@@ -349,8 +441,8 @@ const app = createApp({
                 }
             }
             if (pastedFiles.length > 0) {
-                addFilesToPending(pastedFiles);
-                showToast(`已从剪贴板粘贴 ${pastedFiles.length} 张图片`);
+                await addFilesToPending(pastedFiles);
+                showToast(`已从剪贴板粘贴 ${pastedFiles.length} 张图片并压缩至1080P`);
             }
         };
 
@@ -383,16 +475,31 @@ const app = createApp({
             }
         };
 
-        const addFilesToPending = (files) => {
-            for (let file of files) {
-                const previewUrl = URL.createObjectURL(file);
-                pendingImages.value.push({ file, previewUrl, name: file.name, size: file.size });
+        const addFilesToPending = async (files) => {
+            if (!files || files.length === 0) return;
+            isCompressingImages.value = true;
+            const newAdded = [];
+            try {
+                for (let file of files) {
+                    let processed = file;
+                    try {
+                        processed = await compressImageTo1080p(file);
+                    } catch (e) {
+                        console.warn('Compression error:', e);
+                    }
+                    const previewUrl = URL.createObjectURL(processed);
+                    const item = { file: processed, previewUrl, name: processed.name, size: processed.size };
+                    pendingImages.value.push(item);
+                    newAdded.push(item);
+                }
+            } finally {
+                isCompressingImages.value = false;
+                refreshIcons();
             }
-            refreshIcons();
 
             // Automatically trigger OCR / Barcode recognition on first image
-            if (files.length > 0 && (!assetForm.value.id || assetForm.value.id.startsWith('AST-'))) {
-                recognizeIdFromFile(files[0]);
+            if (newAdded.length > 0 && (!assetForm.value.id || assetForm.value.id.startsWith('AST-'))) {
+                recognizeIdFromFile(newAdded[0].file);
             }
         };
 
@@ -511,7 +618,15 @@ const app = createApp({
             isUploadingMoreImages.value = true;
             try {
                 const formData = new FormData();
-                for (let f of files) formData.append('files', f);
+                for (let f of files) {
+                    let processed = f;
+                    try {
+                        processed = await compressImageTo1080p(f);
+                    } catch (e) {
+                        console.warn('Compress error:', e);
+                    }
+                    formData.append('files', processed);
+                }
 
                 const res = await fetch(`/api/assets/${encodeURIComponent(activeAsset.value.id)}/images`, {
                     method: 'POST',
@@ -519,7 +634,7 @@ const app = createApp({
                 });
                 if (!res.ok) throw new Error('上传图片失败');
 
-                showToast(`已追加上传 ${files.length} 张图片`);
+                showToast(`已追加上传 ${files.length} 张图片（已压缩至1080P）`);
                 // Reload active asset detail
                 await openDetail(activeAsset.value.id);
                 await loadAssets(currentPage.value);
@@ -683,8 +798,14 @@ const app = createApp({
             if (!file) return;
             showToast('正在分析图片中的资产编号与标签...');
             try {
+                let processed = file;
+                try {
+                    processed = await compressImageTo1080p(file);
+                } catch (e) {
+                    console.warn('Compress error:', e);
+                }
                 const formData = new FormData();
-                formData.append('file', file);
+                formData.append('file', processed);
                 const res = await fetch('/api/assets/recognize-id', {
                     method: 'POST',
                     body: formData,
@@ -761,6 +882,8 @@ const app = createApp({
             isEditing,
             assetForm,
             pendingImages,
+            isCompressingImages,
+            formatFileSize,
             isSavingAsset,
             generateAssetId,
             openAddModal,
