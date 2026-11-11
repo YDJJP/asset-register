@@ -6,6 +6,15 @@
     <title>Asset Register - 资产登记管理系统</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
     
+    <!-- Suppress Tailwind CDN dev warning in production console -->
+    <script>
+        const _origConsoleWarn = console.warn;
+        console.warn = function(...args) {
+            if (typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com should not be used in production')) return;
+            _origConsoleWarn.apply(console, args);
+        };
+    </script>
+
     <!-- Self-hosted vendor assets (100% offline & intranet compatible) -->
     <script src="/static/vendor/tailwind.cdn.js"></script>
     <script src="/static/vendor/vue.global.prod.js"></script>
@@ -123,7 +132,7 @@
 
                     <button @click="handleInitialSetup" :disabled="authLoading"
                             class="w-full mt-2 py-3 px-4 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-medium text-sm rounded-xl shadow-lg shadow-indigo-500/25 flex items-center justify-center space-x-2 transition disabled:opacity-50">
-                        <i v-if="!authLoading" data-lucide="shield-check" class="w-5 h-5"></i>
+                        <i v-show="!authLoading" data-lucide="shield-check" class="w-5 h-5"></i>
                         <span v-if="authLoading" class="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
                         <span>{{ authLoading ? '请在系统弹窗中验证指纹/面容...' : '生成 Passkey 并激活系统' }}</span>
                     </button>
@@ -147,7 +156,7 @@
                 <div class="space-y-4">
                     <button @click="handlePasskeyLogin" :disabled="authLoading"
                             class="w-full py-3.5 px-4 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-medium text-sm rounded-xl shadow-lg shadow-indigo-500/25 flex items-center justify-center space-x-2 transition active:scale-98 disabled:opacity-50">
-                        <i v-if="!authLoading" data-lucide="fingerprint" class="w-5 h-5"></i>
+                        <i v-show="!authLoading" data-lucide="fingerprint" class="w-5 h-5"></i>
                         <span v-if="authLoading" class="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
                         <span>{{ authLoading ? '请轻触指纹 / 面容识别...' : '使用 Passkey 快捷登录' }}</span>
                     </button>

@@ -95,9 +95,27 @@ const app = createApp({
 
         const refreshIcons = () => {
             nextTick(() => {
-                if (window.lucide) {
-                    window.lucide.createIcons();
-                }
+                if (!window.lucide || !window.lucide.icons) return;
+                document.querySelectorAll('[data-lucide]').forEach((el) => {
+                    const iconName = el.getAttribute('data-lucide');
+                    if (!iconName) return;
+                    if (el.getAttribute('data-rendered') === iconName && el.querySelector('svg')) return;
+
+                    const pascalName = iconName
+                        .split('-')
+                        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+                        .join('');
+
+                    const iconNode = window.lucide.icons[pascalName] || window.lucide.icons[iconName];
+                    if (iconNode) {
+                        const svg = window.lucide.createElement(iconNode, {
+                            class: el.getAttribute('class') || '',
+                        });
+                        // Safe rendering: NEVER detach el from parent (prevents Vue Virtual DOM insertBefore null crash)
+                        el.replaceChildren(svg);
+                        el.setAttribute('data-rendered', iconName);
+                    }
+                });
             });
         };
 

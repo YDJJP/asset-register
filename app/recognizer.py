@@ -175,3 +175,4 @@ def recognize_asset_id_from_image(image_bytes: bytes) -> Dict[str, Any]:
         "candidates": candidates[:6],  # Top 6 candidate tags
         "details": detected_items[:10],
     }
+

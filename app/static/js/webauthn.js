@@ -52,7 +52,8 @@ const WebAuthnClient = {
         // 2. Trigger browser passkey registration prompt (Biometric / Security Key)
         let credential;
         try {
-            credential = await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON });
+            const opts = optionsJSON.optionsJSON || optionsJSON;
+            credential = await window.SimpleWebAuthnBrowser.startRegistration(opts);
         } catch (err) {
             console.error('Passkey registration error:', err);
             if (err.name === 'NotAllowedError') {
@@ -100,7 +101,8 @@ const WebAuthnClient = {
 
         let credential;
         try {
-            credential = await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON });
+            const opts = optionsJSON.optionsJSON || optionsJSON;
+            credential = await window.SimpleWebAuthnBrowser.startRegistration(opts);
         } catch (err) {
             if (err.name === 'NotAllowedError') {
                 throw new Error('您取消了验证或超时');
@@ -153,7 +155,8 @@ const WebAuthnClient = {
         // 2. Trigger browser passkey login prompt
         let credential;
         try {
-            credential = await window.SimpleWebAuthnBrowser.startAuthentication({ optionsJSON });
+            const opts = optionsJSON.optionsJSON || optionsJSON;
+            credential = await window.SimpleWebAuthnBrowser.startAuthentication(opts);
         } catch (err) {
             console.error('Passkey login error:', err);
             if (err.name === 'NotAllowedError') {
